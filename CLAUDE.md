@@ -7,36 +7,57 @@ This repository contains the **ICT Equipment & Borrowing Management System**, a 
 
 ## Architecture Strategy: Local-First Hybrid Model
 
+The system is delivered as **two independent projects** in this repository:
+
+```
+inventory-management/
+  web/   -> UI/UX project   (Vue 3 + PrimeVue + Pinia, Vite dev server :5173)
+  api/   -> API project     (Laravel + MySQL, php artisan serve :8000)
+```
+
+They share no build pipeline and deploy separately. Their only contract is the
+HTTP sync protocol below, plus the status vocabulary duplicated in
+`api/app/Domain/InventoryStatus.php` and `web/src/domain/constants.js`.
+
 ```
 +-----------------------------------------------------------------------+
-|                            Client Application                         |
-|  +---------------------------+       +-----------------------------+  |
-|  |     UI Layer (React/Next) | <---> | Local Database (RxDB/IndexedDB)|
-|  +---------------------------+       +--------------+--------------+  |
+|                    UI/UX Project  (web/ :5173)                        |
+|  +---------------------------+       +------------------------------+ |
+|  | Vue 3 + PrimeVue + Pinia  | <---> | Local Database (Dexie/IndexedDB)|
+|  +---------------------------+       +--------------+---------------+ |
 +-----------------------------------------------------|-----------------+
                                                       |
                                           Background Sync Engine
-                                          (Web Worker / WebSocket)
+                                          (Pinia store + outbox queue)
                                                       |
+                                            CORS / HTTP JSON
                                                       v
 +-----------------------------------------------------------------------+
-|                            Backend Server                             |
+|                    API Project  (api/ :8000)                          |
 |  +---------------------------+       +-----------------------------+  |
-|  |     API Engine (Node/Go)  | <---> | Central Database (MySQL)     | |
+|  |   Laravel Route Handlers  | <---> | Central Database (MySQL)     | |
 |  +---------------------------+       +-----------------------------+  |
 +-----------------------------------------------------------------------+
 ```
 
 ### Core Stack
-- **Frontend Framework:** Next.js 14+ (App Router, TypeScript, Tailwind CSS)
-- **Local Client Store:** RxDB / IndexedDB (for zero-latency offline read/write operations)
-- **Backend API:** Node.js (Express / Fastify) or Next.js Route Handlers
+- **Frontend Framework:** Vue 3 (Composition API, `<script setup>`) built with Vite
+- **UI Component Library:** PrimeVue 4 (Aura theme, MIT-licensed line) + PrimeIcons
+- **Client State:** Pinia (`inventory` store for data, `sync` store for the engine)
+- **Local Client Store:** Dexie / IndexedDB (for zero-latency offline read/write operations)
+- **Backend API:** Laravel (PHP 8.4) REST route handlers
 - **Central Storage:** MySQL 8
-- **Synchronization Engine:** Custom Outbox Queue with HTTP Pull/Push REST + WebSockets
+- **Synchronization Engine:** Custom Outbox Queue with HTTP Pull/Push REST
 
 ---
 
 ## User Stories & Functional Requirements
+
+### Epic 0: Accounts & Authentication
+- **US-0.1:** As a User, sign in without a password by receiving a one-time code at my work email.
+- **US-0.2:** As a System Admin, provision staff accounts and assign roles (`ADMIN`, `MANAGER`, `STAFF`).
+- **US-0.3:** As a System Admin, deactivate an account and have it lose access immediately on every device.
+- **US-0.4:** As a User, update my own display name; only an admin can change my email or role.
 
 ### Epic 1: Category & Attribute Management
 - **US-1.1:** As an Admin, create, update, and soft-delete equipment categories (e.g., Laptops, Networking, Peripherals).
@@ -149,8 +170,10 @@ CREATE TABLE sync_changes (
 
 ## Offline Synchronization Protocol & Conflict Strategy
 
-1. **Local Outbox Queue:** Mutations write to RxDB and queue an entry in local `sync_queue`:
-   `{ id, table, action, payload, client_timestamp }`.
+1. **Local Outbox Queue:** Mutations write to Dexie/IndexedDB and queue an entry in
+   the local `sync_queue` table — both inside one Dexie transaction, so a change
+   can never be applied locally without also being scheduled for the server:
+   `{ id, table, action, docId, payload, clientTimestamp, status, attempts, lastError }`.
 2. **Push Phase (`POST /api/sync/push`):** Uploads local mutations.
 3. **Pull Phase (`GET /api/sync/pull?last_synced_at=TIMESTAMP`):** Downloads server updates changed since `last_synced_at`.
 4. **Conflict Rules:**
@@ -159,19 +182,60 @@ CREATE TABLE sync_changes (
 
 ---
 
-## Claude Code Step-by-Step Implementation Prompts
+5. **Failure handling:** transient failures (offline, 5xx, unreachable database)
+   return outbox entries to `PENDING` for automatic retry; only a server that
+   refuses a change on its merits (4xx / `REJECTED`) marks it `FAILED` for a
+   human. Orphaned `IN_FLIGHT` entries are released after 60s.
 
-### Phase 1: Foundation Setup
-`claude "Initialize Next.js App Router project with TypeScript, Tailwind CSS, and lucide-react. Set up Prisma / PostgreSQL ORM schemas for Categories, Equipment, BorrowingTransactions, and SyncLogs."`
+---
 
-### Phase 2: Client Offline Database Engine
-`claude "Implement RxDB client database setup with IndexedDB adapter. Create schemas matching Equipment, Categories, and Borrowing. Implement a local Sync Queue module using Outbox pattern."`
+## Working On This Repository
 
-### Phase 3: Dynamic Category & Equipment UI
-`claude "Build CRUD pages for Categories with dynamic JSON custom fields builder. Create Equipment management page with table search, offline filtering, and QR code scanner component."`
+### Running both projects
 
-### Phase 4: Borrowing Management Workflow
-`claude "Build Borrowing/Return checkout workflow UI. Include quick scan checkout, duration calculations based on category defaults, return inspection form, and status badge indicators."`
+```bash
+# terminal 1 — API
+cd api && php artisan serve --port=8000
 
-### Phase 5: Sync API & Conflict Engine
-`claude "Build /api/sync/push and /api/sync/pull endpoints. Implement conflict detection for overlapping borrowings and Last-Write-Wins for equipment metadata. Connect client sync engine to auto-trigger on network connection restoration."`
+# terminal 2 — UI
+cd web && npm run dev
+```
+
+The UI reads `VITE_API_URL` (default `http://localhost:8000/api`). The API allows
+the UI's origin via `FRONTEND_URLS` in `api/.env`.
+
+### Checks
+
+```bash
+cd api && php artisan test
+```
+
+```bash
+cd web && npm run build
+```
+
+`api/tests` runs against a real MySQL database (`ict_inventory_test`), because the
+sync engine depends on MySQL's unique-constraint behaviour and `DATETIME(3)`
+precision that SQLite does not reproduce faithfully.
+
+### Authentication
+
+Passwordless email OTP exchanged for a Sanctum bearer token. Only the code hash
+is stored; codes are single-use, expire in 10 minutes, burn after 5 wrong
+guesses, and are rate limited per address and per IP. `request-code` answers
+identically for unknown addresses so it cannot enumerate staff emails.
+
+Accounts are admin-provisioned — there is no public sign-up. Roles gate access
+in three independent places: the UI hides what you cannot do, the router guards
+the route, and the API enforces it (`EnsureRole`). Only the last is a security
+boundary.
+
+### Conventions
+- Vue components use `<script setup>`; state lives in Pinia stores, never in
+  ad-hoc module globals.
+- Authorization is enforced server-side; treat client-side role checks purely as
+  user experience.
+- Every local write goes through `web/src/stores/inventory.js` so the document
+  and its outbox entry are always created together.
+- Writes on the API always go through `App\Services\SyncService`, including the
+  REST controllers, so the conflict rules have exactly one implementation.
