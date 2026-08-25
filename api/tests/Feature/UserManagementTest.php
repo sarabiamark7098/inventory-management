@@ -56,7 +56,7 @@ class UserManagementTest extends TestCase
         $this->postJson('/api/users', [
             'name' => 'Clone',
             'email' => 'root@ict.test',
-            'role' => Role::STAFF,
+            'role' => Role::MANAGER,
         ])->assertStatus(422)->assertJsonValidationErrors('email');
     }
 
@@ -67,7 +67,7 @@ class UserManagementTest extends TestCase
         $this->postJson('/api/users', [
             'name' => 'Outsider',
             'email' => 'outsider@gmail.com',
-            'role' => Role::STAFF,
+            'role' => Role::MANAGER,
         ])
             ->assertStatus(422)
             ->assertJsonValidationErrors('email');
@@ -75,14 +75,14 @@ class UserManagementTest extends TestCase
         $this->postJson('/api/users', [
             'name' => 'Officer',
             'email' => 'officer@dswd.gov.ph',
-            'role' => Role::STAFF,
+            'role' => Role::MANAGER,
         ])->assertCreated();
     }
 
     public function test_an_existing_account_cannot_be_moved_off_the_allowed_domain(): void
     {
         $user = User::create([
-            'name' => 'Officer', 'email' => 'officer@dswd.gov.ph', 'role' => Role::STAFF, 'is_active' => true,
+            'name' => 'Officer', 'email' => 'officer@dswd.gov.ph', 'role' => Role::MANAGER, 'is_active' => true,
         ]);
         config(['accounts.allowed_email_domains' => ['dswd.gov.ph']]);
 
@@ -105,7 +105,7 @@ class UserManagementTest extends TestCase
     public function test_admin_can_change_a_role(): void
     {
         $user = User::create([
-            'name' => 'Staff', 'email' => 's@ict.test', 'role' => Role::STAFF, 'is_active' => true,
+            'name' => 'Manager', 'email' => 's@ict.test', 'role' => Role::MANAGER, 'is_active' => true,
         ]);
 
         $this->putJson("/api/users/{$user->id}", ['role' => Role::MANAGER])
@@ -116,7 +116,7 @@ class UserManagementTest extends TestCase
     public function test_deactivating_an_account_revokes_its_tokens(): void
     {
         $user = User::create([
-            'name' => 'Staff', 'email' => 's@ict.test', 'role' => Role::STAFF, 'is_active' => true,
+            'name' => 'Manager', 'email' => 's@ict.test', 'role' => Role::MANAGER, 'is_active' => true,
         ]);
         $user->createToken('web');
         $this->assertSame(1, $user->tokens()->count());
@@ -128,7 +128,7 @@ class UserManagementTest extends TestCase
 
     public function test_the_last_active_admin_cannot_be_demoted(): void
     {
-        $this->putJson("/api/users/{$this->admin->id}", ['role' => Role::STAFF])
+        $this->putJson("/api/users/{$this->admin->id}", ['role' => Role::MANAGER])
             ->assertStatus(422)
             ->assertJsonValidationErrors('role');
 
@@ -149,8 +149,8 @@ class UserManagementTest extends TestCase
             'name' => 'Second', 'email' => 'second@ict.test', 'role' => Role::ADMIN, 'is_active' => true,
         ]);
 
-        $this->putJson("/api/users/{$this->admin->id}", ['role' => Role::STAFF])->assertOk();
-        $this->assertSame(Role::STAFF, $this->admin->fresh()->role);
+        $this->putJson("/api/users/{$this->admin->id}", ['role' => Role::MANAGER])->assertOk();
+        $this->assertSame(Role::MANAGER, $this->admin->fresh()->role);
     }
 
     public function test_you_cannot_delete_your_own_account(): void
@@ -163,7 +163,7 @@ class UserManagementTest extends TestCase
     public function test_admin_can_delete_another_account(): void
     {
         $user = User::create([
-            'name' => 'Staff', 'email' => 's@ict.test', 'role' => Role::STAFF, 'is_active' => true,
+            'name' => 'Manager', 'email' => 's@ict.test', 'role' => Role::MANAGER, 'is_active' => true,
         ]);
 
         $this->deleteJson("/api/users/{$user->id}")->assertOk();
@@ -172,11 +172,34 @@ class UserManagementTest extends TestCase
 
     public function test_listing_supports_search_and_role_filters(): void
     {
-        User::create(['name' => 'Ada Lovelace', 'email' => 'ada@ict.test', 'role' => Role::STAFF, 'is_active' => true]);
+        // setUp already created one ADMIN (root@ict.test).
+        User::create(['name' => 'Ada Lovelace', 'email' => 'ada@ict.test', 'role' => Role::MANAGER, 'is_active' => true]);
         User::create(['name' => 'Grace Hopper', 'email' => 'grace@ict.test', 'role' => Role::MANAGER, 'is_active' => true]);
 
         $this->getJson('/api/users?search=Ada')->assertOk()->assertJsonCount(1, 'data');
-        $this->getJson('/api/users?role='.Role::MANAGER)->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/users?role='.Role::ADMIN)->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/users?role='.Role::MANAGER)->assertOk()->assertJsonCount(2, 'data');
         $this->getJson('/api/users')->assertOk()->assertJsonCount(3, 'data');
+    }
+
+    public function test_the_borrower_role_can_no_longer_be_assigned(): void
+    {
+        $user = User::create([
+            'name' => 'Manager', 'email' => 's@ict.test', 'role' => Role::MANAGER, 'is_active' => true,
+        ]);
+
+        $this->putJson("/api/users/{$user->id}", ['role' => 'STAFF'])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('role');
+
+        $this->assertSame(Role::MANAGER, $user->fresh()->role);
+    }
+
+    public function test_the_role_options_offered_to_the_client_exclude_the_borrower_role(): void
+    {
+        $roles = $this->getJson('/api/users')->assertOk()->json('roles');
+
+        $this->assertSame(['ADMIN', 'MANAGER'], array_column($roles, 'value'));
+        $this->assertSame(['System Admin', 'Inventory Manager'], array_column($roles, 'label'));
     }
 }

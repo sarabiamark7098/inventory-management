@@ -17,6 +17,28 @@ db.version(1).stores({
   meta: 'key',
 })
 
+// v2 adds government property accountability fields. Existing rows are left in
+// place; the new indexes simply have no value for them until an operator fills
+// the numbers in, which is why the PAR requirement applies to new assets only.
+db.version(2).stores({
+  equipment:
+    'id, assetTag, serialNumber, categoryId, status, parNumber, parIssuedTo, subParNumber, subParIssuedTo, province, division, section, updatedAt, deletedAt',
+})
+
+// v3 adds the official property number (indexed so the scanner can resolve it)
+// and the acquisition date.
+db.version(3).stores({
+  equipment:
+    'id, assetTag, propertyNumber, dateAcquired, serialNumber, categoryId, status, parNumber, parIssuedTo, subParNumber, subParIssuedTo, province, division, section, updatedAt, deletedAt',
+})
+
+// v4 adds the monitor serial (desktops are one asset with two serialised parts)
+// and the deployment details support staff search by.
+db.version(4).stores({
+  equipment:
+    'id, assetTag, propertyNumber, dateAcquired, serialNumber, monitorSerialNumber, categoryId, status, parNumber, parIssuedTo, subParNumber, subParIssuedTo, province, division, section, actualUser, adUsername, anydeskNumber, updatedAt, deletedAt',
+})
+
 /* ------------------------------------------------------------------ */
 /* Checkpoint + client identity                                        */
 /* ------------------------------------------------------------------ */

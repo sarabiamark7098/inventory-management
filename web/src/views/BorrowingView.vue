@@ -6,10 +6,13 @@ import CheckoutDialog from '@/components/CheckoutDialog.vue'
 import ReturnDialog from '@/components/ReturnDialog.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { daysUntilDue, formatDate, isOverdue } from '@/domain/loan'
+import { useIsMobile } from '@/composables/useBreakpoint'
 import { useInventoryStore } from '@/stores/inventory'
 
 const inventory = useInventoryStore()
 const toast = useToast()
+
+const isMobile = useIsMobile()
 
 const tab = ref('active')
 const search = ref('')
@@ -139,6 +142,65 @@ function dueLabel(tx) {
       </IconField>
     </div>
 
+    <div v-if="isMobile" class="record-list">
+      <div v-if="rows.length === 0" class="empty-state">
+        <i class="pi pi-arrow-right-arrow-left" />
+        <p><strong>Nothing here</strong></p>
+        <p v-if="tab === 'active'">Issue a device with Quick checkout to see it here.</p>
+      </div>
+
+      <article v-for="tx in rows" :key="tx.id" class="record-card">
+        <div class="record-card__head">
+          <div class="record-card__title">
+            <strong class="mono">{{ assetOf(tx)?.assetTag ?? '—' }}</strong>
+            <span>{{ assetOf(tx)?.modelName ?? 'Asset removed' }}</span>
+          </div>
+          <StatusTag kind="borrowing" :value="tx.status" :overdue="isOverdue(tx)" />
+        </div>
+
+        <dl class="record-card__meta">
+          <dt>Borrower</dt>
+          <dd>{{ tx.borrowerName }}</dd>
+          <dt>Email</dt>
+          <dd>{{ tx.borrowerEmail }}</dd>
+          <dt>Issued</dt>
+          <dd>{{ formatDate(tx.issueDate) }}</dd>
+          <dt>Due</dt>
+          <dd :class="{ 'due-late': isOverdue(tx) }">
+            {{ formatDate(tx.expectedReturnDate) }}
+            <template v-if="dueLabel(tx)"> · {{ dueLabel(tx) }}</template>
+          </dd>
+        </dl>
+
+        <p v-if="tx.conflictReason" class="conflict-reason">{{ tx.conflictReason }}</p>
+
+        <div
+          v-if="['REQUESTED', 'ISSUED', 'APPROVED', 'OVERDUE', 'CONFLICT_PENDING_REVIEW'].includes(tx.status)"
+          class="record-card__actions"
+        >
+          <template v-if="tx.status === 'REQUESTED'">
+            <Button label="Approve" icon="pi pi-check" size="small" @click="approve(tx)" />
+            <Button
+              label="Reject"
+              icon="pi pi-times"
+              size="small"
+              severity="secondary"
+              outlined
+              @click="reject(tx)"
+            />
+          </template>
+          <Button
+            v-if="['ISSUED', 'APPROVED', 'OVERDUE', 'CONFLICT_PENDING_REVIEW'].includes(tx.status)"
+            label="Return"
+            icon="pi pi-check-circle"
+            size="small"
+            @click="openReturn(tx)"
+          />
+        </div>
+      </article>
+    </div>
+
+    <template v-else>
     <DataTable
       :value="rows"
       :loading="inventory.loading"
@@ -222,6 +284,8 @@ function dueLabel(tx) {
         </template>
       </Column>
     </DataTable>
+    </template>
+
 
     <CheckoutDialog v-model:visible="checkoutOpen" />
     <ReturnDialog v-model:visible="returnOpen" :transaction="returning" />
@@ -246,6 +310,33 @@ function dueLabel(tx) {
   min-width: 16rem;
 }
 
+@media (max-width: 767px) {
+  .controls {
+    align-items: stretch;
+  }
+
+  .controls__search {
+    min-width: 0;
+    width: 100%;
+  }
+
+  /* Four tabs overflow a phone; let them scroll inside their own strip. */
+  .controls :deep(.p-selectbutton) {
+    display: flex;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .controls :deep(.p-selectbutton .p-togglebutton) {
+    flex: 0 0 auto;
+  }
+
+  .record-card__meta dd.due-late {
+    color: var(--p-red-500);
+    font-weight: 600;
+  }
+}
+
 .row-actions {
   display: flex;
   justify-content: flex-end;
@@ -261,6 +352,7 @@ function dueLabel(tx) {
 .conflict-reason {
   margin: 0.3rem 0 0;
   max-width: 16rem;
+  overflow-wrap: anywhere;
   font-size: 0.7rem;
   color: var(--p-text-muted-color);
 }

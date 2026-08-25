@@ -28,6 +28,9 @@ const secondaryTiles = computed(() =>
     inventory.stats.requests > 0
       ? { label: 'Pending requests', value: inventory.stats.requests, icon: 'pi pi-inbox', tone: 'warn' }
       : null,
+    inventory.stats.issued > 0
+      ? { label: 'Issued to users', value: inventory.stats.issued, icon: 'pi pi-user' }
+      : null,
     inventory.stats.maintenance > 0
       ? { label: 'In maintenance', value: inventory.stats.maintenance, icon: 'pi pi-wrench', tone: 'warn' }
       : null,

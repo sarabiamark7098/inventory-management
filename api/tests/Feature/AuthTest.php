@@ -105,7 +105,7 @@ class AuthTest extends TestCase
         User::create([
             'name' => 'Officer',
             'email' => 'officer@dswd.gov.ph',
-            'role' => Role::STAFF,
+            'role' => Role::MANAGER,
             'is_active' => true,
         ]);
 
@@ -152,7 +152,7 @@ class AuthTest extends TestCase
         User::create([
             'name' => 'Other Org',
             'email' => 'person@example.gov',
-            'role' => Role::STAFF,
+            'role' => Role::MANAGER,
             'is_active' => true,
         ]);
 
@@ -286,6 +286,17 @@ class AuthTest extends TestCase
         $this->getJson('/api/users')->assertStatus(401);
     }
 
+    public function test_an_unauthenticated_request_gets_401_even_without_an_accept_header(): void
+    {
+        // Laravel's default is to redirect guests to route('login'), which this
+        // API does not have — that threw from inside the auth middleware and
+        // surfaced as a 500. A browser opened straight at an API URL, or a
+        // monitoring probe, sends no Accept header and hit exactly that path.
+        $this->get('/api/sync/pull', ['Accept' => '*/*'])
+            ->assertStatus(401)
+            ->assertJsonPath('error', 'Authentication required.');
+    }
+
     public function test_health_endpoint_stays_public(): void
     {
         $this->getJson('/api/health')->assertOk()->assertJsonPath('status', 'ok');
@@ -321,20 +332,39 @@ class AuthTest extends TestCase
 
     /* ------------------------------- roles -------------------------------- */
 
-    public function test_staff_can_read_inventory_but_not_push_changes(): void
+    public function test_the_only_roles_are_admin_and_manager(): void
     {
-        $staff = User::create([
+        // The borrower role was removed; a borrower is named on the loan, not
+        // given a login. Anything else must not be assignable.
+        $this->assertSame(['ADMIN', 'MANAGER'], Role::ALL);
+
+        $admin = User::create([
+            'name' => 'Root', 'email' => 'root@ict.test', 'role' => Role::ADMIN, 'is_active' => true,
+        ]);
+        $this->actingAs($admin, 'sanctum');
+
+        $this->postJson('/api/users', [
             'name' => 'Borrower',
             'email' => 'borrower@ict.test',
-            'role' => Role::STAFF,
-            'is_active' => true,
-        ]);
-        $this->actingAs($staff, 'sanctum');
+            'role' => 'STAFF',
+        ])->assertStatus(422)->assertJsonValidationErrors('role');
+    }
 
-        $this->getJson('/api/equipment')->assertOk();
-        $this->getJson('/api/sync/pull')->assertOk();
+    public function test_every_role_may_write_inventory(): void
+    {
+        foreach ([Role::ADMIN, Role::MANAGER] as $i => $role) {
+            $user = User::create([
+                'name' => 'User '.$i,
+                'email' => "user{$i}@ict.test",
+                'role' => $role,
+                'is_active' => true,
+            ]);
+            $this->actingAs($user, 'sanctum');
 
-        $this->postJson('/api/sync/push', ['clientId' => 'x', 'changes' => []])->assertStatus(403);
+            $this->getJson('/api/equipment')->assertOk();
+            $this->getJson('/api/sync/pull')->assertOk();
+            $this->postJson('/api/sync/push', ['clientId' => 'x', 'changes' => []])->assertOk();
+        }
     }
 
     public function test_only_admins_reach_account_management(): void

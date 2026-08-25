@@ -18,6 +18,13 @@ deployments. The only coupling is the HTTP sync contract, plus a small status
 vocabulary intentionally duplicated in `api/app/Domain/InventoryStatus.php` and
 `web/src/domain/constants.js`.
 
+Deploying to a server? See **[DEPLOYMENT.md](DEPLOYMENT.md)** (Ubuntu 24.04,
+nginx + PHP-FPM + MySQL).
+
+> **HTTPS is a functional requirement, not just hardening.** The QR scanner uses
+> `getUserMedia()`, which browsers only expose in a secure context. Over plain
+> HTTP the camera silently never starts.
+
 ## Quick start
 
 **1. API**
@@ -97,18 +104,110 @@ unless listed explicitly. The Vue client shows the same rule via
 | --- | --- |
 | `ADMIN` | Everything, plus account management |
 | `MANAGER` | Register equipment, issue and receive loans, manage categories |
-| `STAFF` | Browse the catalogue and request loans (read-only sync) |
+
+There is no borrower role. A borrower is recorded on the loan itself by name and
+email and never signs in, so an account for them would be a login with nothing
+to do. Everyone who signs in handles inventory.
 
 The client hides what a role cannot do, the router guards the routes, and the
 API enforces it independently — the UI is a convenience, not the boundary.
 
-Seeded accounts in local development: `admin@ict.local`, `manager@ict.local`,
-`staff@ict.local`. With `MAIL_MAILER=log` the code is written to
-`api/storage/logs/laravel.log`:
+The seeder creates one admin from `SEED_ADMIN_EMAIL`; everyone else is
+provisioned from the Accounts screen. Every address must be a real mailbox on an
+allowed domain, since a sign-in code has to actually arrive. With
+`MAIL_MAILER=log` the code is written to `api/storage/logs/laravel.log`
+instead of being sent:
 
 ```bash
 grep "Sign-in code" api/storage/logs/laravel.log | tail -1
 ```
+
+## Government property accountability
+
+Equipment registration captures the fields a Philippine public-sector inventory
+is audited against:
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| Property number | yes | Official government identifier; unique, and the scanner resolves it |
+| Date acquired | yes | Calendar date, drives useful-life reporting |
+| Division | yes | Office unit holding the asset |
+| Section | yes | Unit within the division |
+| Province | yes | Region XI provinces offered by default, free text allowed |
+| PAR number | yes | Property Acknowledgement Receipt |
+| PAR issued to | yes | The accountable officer named on the PAR |
+| Sub-PAR number | no | Only when reassigned onward from that officer |
+| Sub-PAR issued to | only with a Sub-PAR number | Who holds it now |
+| Actual user | no | The person actually using it — often not the accountable officer |
+| Position | no | Their job position |
+| Active Directory user | no | AD account on that machine |
+| AnyDesk number | no | Remote support id |
+
+The last four are optional by design: a spare laptop in the storeroom has no
+user, and a projector has no Active Directory account. Requiring them would
+block registering stock that has not been deployed yet.
+
+### Desktop sets: two serial numbers
+
+A desktop is one asset with two serialised parts, so it records the **system
+unit** serial in `serialNumber` and the **monitor** serial in
+`monitorSerialNumber`.
+
+Which categories work that way is a flag on the category
+(`requiresMonitorSerial`), ticked in the category editor — not inferred by
+string-matching the name "desktop", so an office can apply it to any category
+that pairs two serialised parts.
+
+When the flag is on, registering equipment in that category requires both
+serials. Serials are checked **across both columns**: a monitor serial cannot
+collide with another machine's system unit serial, and one asset cannot use the
+same serial for both parts — otherwise scanning one physical device would
+resolve to two records. The scanner resolves either serial to the same asset.
+
+The PAR pair is enforced **on new registrations only** — in the form, in the
+Pinia store, and again in `SyncService::applyEquipment()`. Equipment registered
+before this policy keeps syncing, so the numbers can be corrected from the app
+instead of the record becoming impossible to save. An update can never blank out
+a PAR number or holder that is already recorded.
+
+Property number, PAR, holder, province, division and section are searchable,
+filterable by province, included in the offline CSV export, and printed on the
+QR labels. The scanner resolves an asset tag, a property number, a serial number
+or a QR payload.
+
+Acquisition dates are handled as **calendar dates**, never timestamps: the client
+formats them from local date parts rather than `toISOString()`, which in UTC+8
+would shift a date picked as the 15th back to the 14th.
+
+### Equipment out of the loan pool
+
+`ISSUED` means an asset is permanently handed to a named user on a PAR — a staff
+member's own workstation, not shared stock — so it **can never be booked out**.
+That is different from `BORROWED`, which is merely busy until the current loan
+ends; a future loan on a borrowed asset is still legitimate and the overlap
+engine judges the dates.
+
+| Equipment status | Can be borrowed? |
+| --- | --- |
+| `AVAILABLE` | yes |
+| `BORROWED` | yes — a future, non-overlapping window |
+| `ISSUED` | **no** |
+| `MAINTENANCE` | **no** |
+| `DECOMMISSIONED` | **no** |
+| `LOST` | **no** |
+
+Enforced in the client *and* in `SyncService::applyBorrowing()`, because an
+offline client may not have seen the status change yet — the server is what
+decides. The guard applies to **new** loans only, so returning or correcting an
+existing loan still syncs even after the asset is withdrawn.
+
+An asset on loan must be returned before it can be issued (`BORROWED → ISSUED`
+is not a legal transition), and reconciliation never overwrites `ISSUED` — it is
+an operator decision, like `MAINTENANCE`.
+
+> **Naming:** `ISSUED` also exists as a *loan* status meaning "handed over for
+> this loan". They are separate vocabularies — `equipment.status` versus
+> `borrowing_transactions.status` — and are never compared to each other.
 
 ## How the offline model works
 
@@ -149,16 +248,24 @@ During a pull, documents with unsynced local edits are skipped so offline work
 is not clobbered. The one exception is a server-flagged conflict, which always
 wins so the contested record surfaces immediately.
 
+When a document is skipped, the sync checkpoint is **rewound to just before it**
+rather than advanced to the server time. Otherwise the next incremental pull
+would start after that document and the server's version would never be offered
+again — the two copies would silently diverge forever.
+
 ## Tests
 
 ```bash
 cd api && php artisan test
 ```
 
-65 tests / 215 assertions covering the loan maths, the conflict engine in both
+104 tests / 360 assertions covering the loan maths, the conflict engine in both
 arrival orders, Last-Write-Wins, equipment reconciliation, request validation,
 the full OTP lifecycle (expiry, reuse, brute force, rate limiting, enumeration
-resistance), the email domain policy, role enforcement, and account management.
+resistance), the email domain policy, property accountability (PAR required on registration,
+never blanked by an update), the desktop two-serial rule and cross-column serial
+uniqueness, the loan-pool guard on issued/withdrawn assets, role enforcement,
+and account management.
 They run against a real MySQL database (`ict_inventory_test`).
 
 ```bash

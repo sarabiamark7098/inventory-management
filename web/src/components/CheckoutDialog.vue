@@ -5,6 +5,7 @@ import { useToast } from 'primevue/usetoast'
 import CodeScanner from './CodeScanner.vue'
 import StatusTag from './StatusTag.vue'
 import { calculateExpectedReturn, formatDateTime } from '@/domain/loan'
+import { canBeBorrowed, explainNotBorrowable } from '@/domain/constants'
 import { useInventoryStore } from '@/stores/inventory'
 
 const props = defineProps({
@@ -56,6 +57,18 @@ const dueDate = computed(() =>
 const unavailable = computed(
   () => props.mode === 'ISSUE' && asset.value !== null && asset.value.status !== 'AVAILABLE',
 )
+
+/** Out of the loan pool entirely, as opposed to merely busy on another loan. */
+const withdrawn = computed(
+  () => asset.value !== null && !canBeBorrowed(asset.value.status),
+)
+
+const unavailableReason = computed(() => {
+  if (!asset.value) return ''
+  return withdrawn.value
+    ? `${asset.value.assetTag} ${explainNotBorrowable(asset.value.status)}.`
+    : `This asset is ${asset.value.status.toLowerCase()} and cannot be issued until it returns to AVAILABLE.`
+})
 
 async function onScan(code) {
   const match = await inventory.findByCode(code)
@@ -145,9 +158,13 @@ async function submit() {
       </Message>
     </template>
 
-    <Message v-if="unavailable" severity="warn" :closable="false" style="margin-top: 0.75rem">
-      This asset is {{ asset.status.toLowerCase() }} and cannot be issued until it
-      returns to AVAILABLE.
+    <Message
+      v-if="unavailable"
+      :severity="withdrawn ? 'error' : 'warn'"
+      :closable="false"
+      style="margin-top: 0.75rem"
+    >
+      {{ unavailableReason }}
     </Message>
 
     <div v-if="asset" class="form-grid" style="margin-top: 1rem">
@@ -215,7 +232,7 @@ async function submit() {
         :label="saving ? 'Saving…' : mode === 'REQUEST' ? 'Submit request' : 'Confirm checkout'"
         icon="pi pi-check"
         :loading="saving"
-        :disabled="!asset || unavailable"
+        :disabled="!asset || unavailable || withdrawn"
         @click="submit"
       />
     </template>

@@ -17,11 +17,37 @@
     margin: 0;
   }
 
+  html {
+    /* Stops iOS Safari inflating text when the phone is rotated. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
   body {
     font-family:
       'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     background: var(--p-surface-100);
     color: var(--p-text-color);
+    /* Nothing in this app is a horizontal-scrolling layout. If something
+       overflows, it is a bug to fix, not something to let the page slide. */
+    overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /*
+   * iOS Safari zooms the whole page when a focused input's font-size is under
+   * 16px. Every text-entry control therefore stays at 16px on small screens,
+   * regardless of what the component library would otherwise apply.
+   */
+  @media (max-width: 767px) {
+    input,
+    textarea,
+    select,
+    .p-inputtext,
+    .p-select-label,
+    .p-inputnumber-input {
+      font-size: 16px !important;
+    }
   }
 
   .app-dark body,
@@ -42,7 +68,12 @@
     max-width: var(--app-shell-max);
     margin: 0 auto;
     padding: 1.5rem 1rem 3rem;
+    /* Clears the iPhone home indicator and landscape notch. */
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+    padding-bottom: calc(3rem + env(safe-area-inset-bottom));
     flex: 1;
+    min-width: 0;
   }
 
   .page-header {
@@ -203,5 +234,181 @@
       inset: 0;
       padding: 10mm;
     }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Mobile                                                              */
+/* ------------------------------------------------------------------ */
+
+@layer app-utilities {
+  /*
+   * Card list used in place of a DataTable on phones. A five-column table
+   * cannot be made readable at 375px, so the small-screen views render this
+   * instead of squeezing or side-scrolling the table.
+   */
+  .record-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .record-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.85rem;
+    border: 1px solid var(--p-content-border-color);
+    border-radius: 0.65rem;
+    background: var(--p-content-background);
+  }
+
+  .record-card__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.6rem;
+  }
+
+  .record-card__title {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+  }
+
+  .record-card__title strong {
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+  }
+
+  .record-card__title span {
+    font-size: 0.76rem;
+    color: var(--p-text-muted-color);
+    overflow-wrap: anywhere;
+  }
+
+  .record-card__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .record-card__meta {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.2rem 0.75rem;
+    font-size: 0.76rem;
+  }
+
+  .record-card__meta dt {
+    color: var(--p-text-muted-color);
+  }
+
+  .record-card__meta dd {
+    margin: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .record-card__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--p-content-border-color);
+  }
+
+  .record-card__actions > * {
+    flex: 1 1 auto;
+  }
+
+  @media (max-width: 767px) {
+    .app-main {
+      padding-top: 1rem;
+    }
+
+    .page-header {
+      margin-bottom: 1rem;
+    }
+
+    .page-header h1 {
+      font-size: 1.15rem;
+    }
+
+    /* Action buttons go full width so they are comfortable thumb targets. */
+    .toolbar-actions {
+      width: 100%;
+    }
+
+    .toolbar-actions > * {
+      flex: 1 1 auto;
+    }
+
+    .two-col,
+    .form-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .stat-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .card-grid {
+      grid-template-columns: 1fr;
+    }
+
+    /* Comfortable minimum touch target (WCAG 2.5.5). */
+    .p-button {
+      min-height: 2.75rem;
+    }
+
+    .p-button.p-button-icon-only {
+      min-width: 2.75rem;
+    }
+
+    /* Fields are tapped as often as buttons, so they get the same floor. */
+    .p-inputtext,
+    .p-select,
+    .p-inputnumber-input,
+    .p-datepicker-input {
+      min-height: 2.75rem;
+    }
+
+    .p-selectbutton .p-togglebutton {
+      min-height: 2.5rem;
+    }
+
+    /* Dialogs behave as full-screen sheets rather than cramped modals. */
+    .p-dialog {
+      margin: 0;
+      max-height: 100dvh;
+      border-radius: 0;
+    }
+
+    .p-dialog .p-dialog-content {
+      padding-bottom: calc(1.25rem + env(safe-area-inset-bottom));
+    }
+
+    .p-dialog .p-dialog-footer {
+      display: flex;
+      gap: 0.5rem;
+      padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+    }
+
+    .p-dialog .p-dialog-footer > * {
+      flex: 1 1 auto;
+    }
+
+    .p-toast {
+      width: calc(100vw - 2rem);
+      max-width: 24rem;
+    }
+  }
+
+  /* Any genuinely wide content scrolls inside its own box, never the page. */
+  .scroll-x {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 }

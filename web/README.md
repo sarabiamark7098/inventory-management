@@ -41,9 +41,6 @@ token once on boot.
 Signing out wipes the local IndexedDB cache — on a shared workstation the next
 person must not inherit the previous user's catalogue and loan history.
 
-A borrower (`STAFF`) gets a read-only sync: the engine skips the push phase
-entirely rather than collecting 403s.
-
 In local development the API logs the code instead of emailing it:
 
 ```bash
@@ -77,6 +74,25 @@ arriving from the pull phase re-renders the UI automatically.
 Pinned to the **4.x line, which is MIT-licensed**. PrimeVue 5 is commercially
 licensed and logs `[PrimeUI] PrimeUI license is not configured` at runtime.
 Components are registered globally in `src/plugins/primevue-components.js`.
+
+## Mobile
+
+The UI is built for phones as well as desktops, because audits happen on the
+floor with a handset:
+
+- Below 768px the wide data tables are **not rendered at all** — `useIsMobile()`
+  swaps in a card list, so there is nothing to scroll sideways.
+- Dialogs become full-screen sheets; the equipment form, scanner and QR sheet
+  all fit a 375px viewport.
+- Every text input is 16px on small screens, which is what stops iOS Safari
+  zooming the page when a field is focused.
+- Buttons and fields have a 44px minimum height (WCAG 2.5.5).
+- `viewport-fit=cover` plus `env(safe-area-inset-*)` keeps content clear of the
+  iPhone notch and home indicator.
+- Pinch-zoom is deliberately left enabled; disabling it fails accessibility.
+
+Verified at 375x812 (iPhone), 768x1024 (tablet) and desktop with no horizontal
+overflow on any screen.
 
 ## Notes
 

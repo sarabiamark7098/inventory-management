@@ -19,6 +19,22 @@ return [
     |
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Bootstrap Admin
+    |--------------------------------------------------------------------------
+    |
+    | Read here rather than with env() inside the seeder: once a deployment runs
+    | `php artisan config:cache`, env() outside a config file returns null, and
+    | the seeder would silently provision the wrong address.
+    |
+    */
+
+    'seed_admin' => [
+        'email' => env('SEED_ADMIN_EMAIL', 'icts.fo11@dswd.gov.ph'),
+        'name' => env('SEED_ADMIN_NAME', 'ICT Administrator'),
+    ],
+
     'allowed_email_domains' => array_values(array_filter(array_map(
         fn ($domain) => strtolower(trim($domain)),
         explode(',', (string) env('ACCOUNT_EMAIL_DOMAINS', 'dswd.gov.ph')),

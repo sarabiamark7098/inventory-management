@@ -97,8 +97,8 @@ on account creation, on email changes, **and** inside `OtpService::issue()`, so
 a row inserted directly into the database still cannot receive a code. Set the
 variable empty to allow any domain.
 
-Roles: `ADMIN` (everything + accounts), `MANAGER` (inventory writes),
-`STAFF` (read-only catalogue access).
+Roles: `ADMIN` (everything + accounts) and `MANAGER` (inventory writes). There is
+no borrower role — borrowers are named on the loan and never sign in.
 
 ### Sign-in code sender
 

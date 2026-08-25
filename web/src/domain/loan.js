@@ -64,3 +64,26 @@ export function formatDateTime(value) {
   if (!value) return '—'
   return new Date(value).toLocaleString()
 }
+
+/**
+ * Formats a Date as `YYYY-MM-DD` using its **local** parts.
+ *
+ * `toISOString()` converts to UTC first, which in Philippine time (UTC+8) turns
+ * a date picked as the 15th into the 14th. Acquisition dates are calendar days,
+ * so they must never move.
+ */
+export function toDateOnly(value) {
+  if (!value) return null
+  const d = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(d.getTime())) return null
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/** Parses `YYYY-MM-DD` back into a local Date for the date picker. */
+export function fromDateOnly(value) {
+  if (!value) return null
+  const [y, m, d] = String(value).slice(0, 10).split('-').map(Number)
+  if (!y || !m || !d) return null
+  return new Date(y, m - 1, d)
+}

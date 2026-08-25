@@ -22,6 +22,7 @@ class Category extends Model
     protected $casts = [
         'custom_fields' => 'array',
         'default_loan_days' => 'integer',
+        'requires_monitor_serial' => 'boolean',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',
@@ -41,6 +42,7 @@ class Category extends Model
             'description' => $this->description,
             'customFields' => self::normalizeCustomFields($this->custom_fields),
             'defaultLoanDays' => (int) $this->default_loan_days,
+            'requiresMonitorSerial' => (bool) $this->requires_monitor_serial,
             'createdAt' => $this->created_at?->toIso8601ZuluString('millisecond'),
             'updatedAt' => $this->updated_at?->toIso8601ZuluString('millisecond'),
             'deletedAt' => $this->deleted_at?->toIso8601ZuluString('millisecond'),

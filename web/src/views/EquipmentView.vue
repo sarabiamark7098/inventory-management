@@ -7,17 +7,23 @@ import CodeScanner from '@/components/CodeScanner.vue'
 import EquipmentFormDialog from '@/components/EquipmentFormDialog.vue'
 import QrLabelSheet from '@/components/QrLabelSheet.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { EQUIPMENT_CONDITIONS, EQUIPMENT_STATUSES } from '@/domain/constants'
+import { EQUIPMENT_CONDITIONS, EQUIPMENT_STATUSES, PROVINCES } from '@/domain/constants'
+import { useIsMobile } from '@/composables/useBreakpoint'
+import { formatDate } from '@/domain/loan'
 import { useInventoryStore } from '@/stores/inventory'
 
 const inventory = useInventoryStore()
 const confirm = useConfirm()
 const toast = useToast()
 
+const isMobile = useIsMobile()
+
 const search = ref('')
 const statusFilter = ref(null)
 const categoryFilter = ref(null)
 const conditionFilter = ref(null)
+const provinceFilter = ref(null)
+const filtersOpen = ref(false)
 
 const formOpen = ref(false)
 const editing = ref(null)
@@ -46,6 +52,7 @@ const filtered = computed(() => {
   return inventory.equipment.filter((item) => {
     if (statusFilter.value && item.status !== statusFilter.value) return false
     if (conditionFilter.value && item.condition !== conditionFilter.value) return false
+    if (provinceFilter.value && item.province !== provinceFilter.value) return false
     if (categoryFilter.value === '__none__' && item.categoryId) return false
     if (
       categoryFilter.value &&
@@ -58,10 +65,24 @@ const filtered = computed(() => {
 
     return [
       item.assetTag,
+      item.propertyNumber,
+      item.dateAcquired,
       item.serialNumber,
+      item.monitorSerialNumber,
+      item.actualUser,
+      item.position,
+      item.adUsername,
+      item.anydeskNumber,
       item.modelName,
       item.brand,
       item.location,
+      item.section,
+      item.division,
+      item.province,
+      item.parNumber,
+      item.parIssuedTo,
+      item.subParNumber,
+      item.subParIssuedTo,
       inventory.categoryById.get(item.categoryId)?.name,
       ...Object.values(item.specifications ?? {}).map((v) => String(v ?? '')),
     ]
@@ -73,7 +94,12 @@ const filtered = computed(() => {
 })
 
 const filtersActive = computed(
-  () => search.value || statusFilter.value || categoryFilter.value || conditionFilter.value,
+  () =>
+    search.value ||
+    statusFilter.value ||
+    categoryFilter.value ||
+    conditionFilter.value ||
+    provinceFilter.value,
 )
 
 function clearFilters() {
@@ -81,6 +107,7 @@ function clearFilters() {
   statusFilter.value = null
   categoryFilter.value = null
   conditionFilter.value = null
+  provinceFilter.value = null
 }
 
 function openCreate() {
@@ -123,13 +150,27 @@ function confirmDelete(item) {
 function exportCsv() {
   const columns = [
     ['Asset Tag', (r) => r.assetTag],
+    ['Property Number', (r) => r.propertyNumber],
+    ['Date Acquired', (r) => r.dateAcquired],
     ['Serial Number', (r) => r.serialNumber],
+    ['Monitor Serial Number', (r) => r.monitorSerialNumber],
     ['Model', (r) => r.modelName],
     ['Brand', (r) => r.brand],
     ['Category', (r) => inventory.categoryById.get(r.categoryId)?.name ?? ''],
     ['Status', (r) => r.status],
     ['Condition', (r) => r.condition],
     ['Location', (r) => r.location],
+    ['Division', (r) => r.division],
+    ['Section', (r) => r.section],
+    ['Province', (r) => r.province],
+    ['PAR Number', (r) => r.parNumber],
+    ['PAR Issued To', (r) => r.parIssuedTo],
+    ['Sub-PAR Number', (r) => r.subParNumber],
+    ['Sub-PAR Issued To', (r) => r.subParIssuedTo],
+    ['Actual User', (r) => r.actualUser],
+    ['Position', (r) => r.position],
+    ['AD Username', (r) => r.adUsername],
+    ['AnyDesk Number', (r) => r.anydeskNumber],
     ['Specifications', (r) => JSON.stringify(r.specifications ?? {})],
     ['Updated At', (r) => r.updatedAt],
   ]
@@ -190,17 +231,29 @@ function exportCsv() {
 
     <Card class="filter-card">
       <template #content>
-        <div class="filter-grid">
-          <IconField>
-            <InputIcon class="pi pi-search" />
-            <InputText
-              v-model="search"
-              placeholder="Search tag, serial, model, specs…"
-              aria-label="Search equipment"
-              fluid
-            />
-          </IconField>
+        <IconField>
+          <InputIcon class="pi pi-search" />
+          <InputText
+            v-model="search"
+            placeholder="Search tag, serial, user, AnyDesk, PAR…"
+            aria-label="Search equipment"
+            fluid
+          />
+        </IconField>
 
+        <!-- Four dropdowns would bury the list on a phone, so they collapse. -->
+        <Button
+          v-if="isMobile"
+          class="filter-toggle"
+          :label="filtersOpen ? 'Hide filters' : 'Filters'"
+          :icon="filtersOpen ? 'pi pi-chevron-up' : 'pi pi-sliders-h'"
+          severity="secondary"
+          text
+          size="small"
+          @click="filtersOpen = !filtersOpen"
+        />
+
+        <div v-show="!isMobile || filtersOpen" class="filter-grid">
           <Select
             v-model="categoryFilter"
             :options="categoryOptions"
@@ -227,6 +280,14 @@ function exportCsv() {
             aria-label="Filter by condition"
             fluid
           />
+          <Select
+            v-model="provinceFilter"
+            :options="PROVINCES"
+            placeholder="All provinces"
+            show-clear
+            aria-label="Filter by province"
+            fluid
+          />
         </div>
 
         <div v-if="filtersActive" class="filter-summary">
@@ -236,6 +297,102 @@ function exportCsv() {
       </template>
     </Card>
 
+    <!-- Phones get cards; a seven-column table cannot be read at 375px. -->
+    <div v-if="isMobile" class="record-list">
+      <div v-if="inventory.loading" class="empty-state">
+        <ProgressSpinner style="width: 2.5rem; height: 2.5rem" />
+      </div>
+
+      <div v-else-if="filtered.length === 0" class="empty-state">
+        <i class="pi pi-desktop" />
+        <p>
+          <strong>
+            {{ inventory.equipment.length === 0 ? 'No equipment registered' : 'No matches' }}
+          </strong>
+        </p>
+        <Button
+          v-if="inventory.equipment.length === 0"
+          label="Register equipment"
+          icon="pi pi-plus"
+          @click="openCreate"
+        />
+        <Button v-else label="Clear filters" severity="secondary" @click="clearFilters" />
+      </div>
+
+      <article v-for="item in filtered" :key="item.id" class="record-card">
+        <div class="record-card__head">
+          <div class="record-card__title">
+            <strong class="mono">{{ item.assetTag }}</strong>
+            <span>{{ item.brand ? `${item.brand} ` : '' }}{{ item.modelName }}</span>
+          </div>
+          <div class="record-card__tags">
+            <StatusTag kind="equipment" :value="item.status" />
+          </div>
+        </div>
+
+        <dl class="record-card__meta">
+          <dt>Property no.</dt>
+          <dd class="mono">{{ item.propertyNumber ?? '—' }}</dd>
+          <dt>Acquired</dt>
+          <dd>{{ item.dateAcquired ? formatDate(item.dateAcquired) : '—' }}</dd>
+          <template v-if="item.actualUser">
+            <dt>Actual user</dt>
+            <dd>{{ item.actualUser }}</dd>
+          </template>
+          <template v-if="item.anydeskNumber">
+            <dt>AnyDesk</dt>
+            <dd class="mono">{{ item.anydeskNumber }}</dd>
+          </template>
+          <dt>PAR</dt>
+          <dd class="mono">{{ item.parNumber ?? '—' }}</dd>
+          <dt>Issued to</dt>
+          <dd>{{ item.parIssuedTo ?? '—' }}</dd>
+          <template v-if="item.subParNumber">
+            <dt>Sub-PAR</dt>
+            <dd class="mono">{{ item.subParNumber }}</dd>
+            <dt>Sub-PAR to</dt>
+            <dd>{{ item.subParIssuedTo ?? '—' }}</dd>
+          </template>
+          <dt>Province</dt>
+          <dd>{{ item.province ?? '—' }}</dd>
+          <dt>Division</dt>
+          <dd>{{ item.division ?? '—' }}</dd>
+          <dt>Section</dt>
+          <dd>{{ item.section ?? '—' }}</dd>
+          <dt>Condition</dt>
+          <dd><StatusTag kind="condition" :value="item.condition" /></dd>
+        </dl>
+
+        <div class="record-card__actions">
+          <Button
+            label="Label"
+            icon="pi pi-qrcode"
+            size="small"
+            severity="secondary"
+            outlined
+            @click="showLabels([item])"
+          />
+          <Button
+            label="Edit"
+            icon="pi pi-pencil"
+            size="small"
+            severity="secondary"
+            outlined
+            @click="openEdit(item)"
+          />
+          <Button
+            label="Delete"
+            icon="pi pi-trash"
+            size="small"
+            severity="danger"
+            outlined
+            @click="confirmDelete(item)"
+          />
+        </div>
+      </article>
+    </div>
+
+    <template v-else>
     <DataTable
       :value="filtered"
       :loading="inventory.loading"
@@ -269,6 +426,7 @@ function exportCsv() {
         <template #body="{ data }">
           <div class="asset-cell">
             <strong class="mono">{{ data.assetTag }}</strong>
+            <span class="muted mono">{{ data.propertyNumber ?? '—' }}</span>
             <span class="muted">{{ data.brand ? `${data.brand} ` : '' }}{{ data.modelName }}</span>
           </div>
         </template>
@@ -294,9 +452,40 @@ function exportCsv() {
         </template>
       </Column>
 
-      <Column field="location" header="Location">
+      <Column field="parNumber" header="PAR" sortable>
         <template #body="{ data }">
-          <span class="muted">{{ data.location ?? '—' }}</span>
+          <div class="asset-cell">
+            <strong class="mono">{{ data.parNumber ?? '—' }}</strong>
+            <span class="muted">{{ data.parIssuedTo ?? '—' }}</span>
+            <span v-if="data.subParNumber" class="muted mono">
+              Sub: {{ data.subParNumber }}
+              <template v-if="data.subParIssuedTo"> · {{ data.subParIssuedTo }}</template>
+            </span>
+          </div>
+        </template>
+      </Column>
+
+      <Column field="province" header="Office" sortable>
+        <template #body="{ data }">
+          <div class="asset-cell">
+            <strong>{{ data.province ?? '—' }}</strong>
+            <span class="muted">{{ data.section ?? data.division ?? '—' }}</span>
+          </div>
+        </template>
+      </Column>
+
+      <Column field="dateAcquired" header="Acquired" sortable>
+        <template #body="{ data }">
+          <span class="muted">{{ data.dateAcquired ? formatDate(data.dateAcquired) : '—' }}</span>
+        </template>
+      </Column>
+
+      <Column field="actualUser" header="Assigned to" sortable>
+        <template #body="{ data }">
+          <div class="asset-cell">
+            <strong>{{ data.actualUser ?? '—' }}</strong>
+            <span class="muted">{{ data.position ?? data.location ?? '—' }}</span>
+          </div>
         </template>
       </Column>
 
@@ -332,6 +521,8 @@ function exportCsv() {
         </template>
       </Column>
     </DataTable>
+    </template>
+
 
     <EquipmentFormDialog v-model:visible="formOpen" :equipment="editing" />
 
@@ -340,6 +531,7 @@ function exportCsv() {
       modal
       header="Scan asset"
       :style="{ width: '32rem' }"
+      :breakpoints="{ '767px': '100vw' }"
       @hide="scanMiss = null"
     >
       <CodeScanner v-if="scanOpen" @detected="onScan" />
@@ -353,6 +545,7 @@ function exportCsv() {
       modal
       :header="scanResult?.assetTag ?? ''"
       :style="{ width: '32rem' }"
+      :breakpoints="{ '767px': '100vw' }"
     >
       <template v-if="scanResult">
         <p class="muted" style="margin-top: 0">{{ scanResult.modelName }}</p>
@@ -362,13 +555,48 @@ function exportCsv() {
         </div>
 
         <dl class="detail-list">
+          <div>
+            <dt>Property no.</dt>
+            <dd class="mono">{{ scanResult.propertyNumber ?? '—' }}</dd>
+          </div>
+          <div>
+            <dt>Acquired</dt>
+            <dd>{{ scanResult.dateAcquired ? formatDate(scanResult.dateAcquired) : '—' }}</dd>
+          </div>
           <div><dt>Serial</dt><dd class="mono">{{ scanResult.serialNumber ?? '—' }}</dd></div>
+          <div v-if="scanResult.monitorSerialNumber">
+            <dt>Monitor serial</dt>
+            <dd class="mono">{{ scanResult.monitorSerialNumber }}</dd>
+          </div>
+          <div v-if="scanResult.actualUser">
+            <dt>Actual user</dt><dd>{{ scanResult.actualUser }}</dd>
+          </div>
+          <div v-if="scanResult.position">
+            <dt>Position</dt><dd>{{ scanResult.position }}</dd>
+          </div>
+          <div v-if="scanResult.adUsername">
+            <dt>AD user</dt><dd class="mono">{{ scanResult.adUsername }}</dd>
+          </div>
+          <div v-if="scanResult.anydeskNumber">
+            <dt>AnyDesk</dt><dd class="mono">{{ scanResult.anydeskNumber }}</dd>
+          </div>
           <div>
             <dt>Category</dt>
             <dd>{{ inventory.categoryById.get(scanResult.categoryId)?.name ?? '—' }}</dd>
           </div>
           <div><dt>Location</dt><dd>{{ scanResult.location ?? '—' }}</dd></div>
           <div><dt>Brand</dt><dd>{{ scanResult.brand ?? '—' }}</dd></div>
+          <div><dt>PAR</dt><dd class="mono">{{ scanResult.parNumber ?? '—' }}</dd></div>
+          <div><dt>Issued to</dt><dd>{{ scanResult.parIssuedTo ?? '—' }}</dd></div>
+          <div v-if="scanResult.subParNumber">
+            <dt>Sub-PAR</dt><dd class="mono">{{ scanResult.subParNumber }}</dd>
+          </div>
+          <div v-if="scanResult.subParIssuedTo">
+            <dt>Sub-PAR to</dt><dd>{{ scanResult.subParIssuedTo }}</dd>
+          </div>
+          <div><dt>Province</dt><dd>{{ scanResult.province ?? '—' }}</dd></div>
+          <div><dt>Division</dt><dd>{{ scanResult.division ?? '—' }}</dd></div>
+          <div><dt>Section</dt><dd>{{ scanResult.section ?? '—' }}</dd></div>
           <div
             v-for="(value, key) in scanResult.specifications ?? {}"
             :key="key"
@@ -399,7 +627,7 @@ function exportCsv() {
       modal
       header="QR labels"
       :style="{ width: '52rem' }"
-      :breakpoints="{ '960px': '95vw' }"
+      :breakpoints="{ '960px': '95vw', '767px': '100vw' }"
     >
       <QrLabelSheet v-if="labelsOpen" :items="labelsFor" />
     </Dialog>
@@ -415,6 +643,17 @@ function exportCsv() {
   display: grid;
   gap: 0.6rem;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  margin-top: 0.6rem;
+}
+
+.filter-toggle {
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 767px) {
+  .filter-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .filter-summary {

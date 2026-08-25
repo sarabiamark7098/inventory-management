@@ -207,6 +207,234 @@ class SyncTest extends TestCase
         $this->assertSame('NEWER WINS', Equipment::find($this->equipmentId)->location);
     }
 
+    /* ------------------- property accountability (PAR) ------------------- */
+
+    private function equipmentPayload(string $id, array $overrides = []): array
+    {
+        return array_merge([
+            'id' => $id,
+            'assetTag' => 'ICT-NEW-0001',
+            'propertyNumber' => '2026-11-NEW-0001',
+            'dateAcquired' => '2026-03-15',
+            'modelName' => 'ThinkPad T14',
+            'specifications' => [],
+            'section' => 'Information and Communications Technology Section',
+            'division' => 'Administrative Division',
+            'province' => 'Davao del Sur',
+            'parNumber' => 'PAR-2026-11-0099',
+            'parIssuedTo' => 'Mark Rezzel T. Sarabia',
+            'subParNumber' => null,
+            'subParIssuedTo' => null,
+            'updatedAt' => $this->at('+1 hour'),
+        ], $overrides);
+    }
+
+    public function test_accountability_fields_round_trip_through_sync(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'subParNumber' => 'SUB-PAR-2026-11-0099A',
+            'subParIssuedTo' => 'Ed Michael O. Flete',
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.section', 'Information and Communications Technology Section')
+            ->assertJsonPath('results.0.document.division', 'Administrative Division')
+            ->assertJsonPath('results.0.document.province', 'Davao del Sur')
+            ->assertJsonPath('results.0.document.propertyNumber', '2026-11-NEW-0001')
+            ->assertJsonPath('results.0.document.dateAcquired', '2026-03-15')
+            ->assertJsonPath('results.0.document.parNumber', 'PAR-2026-11-0099')
+            ->assertJsonPath('results.0.document.parIssuedTo', 'Mark Rezzel T. Sarabia')
+            ->assertJsonPath('results.0.document.subParNumber', 'SUB-PAR-2026-11-0099A')
+            ->assertJsonPath('results.0.document.subParIssuedTo', 'Ed Michael O. Flete');
+
+        $this->assertDatabaseHas('equipment', [
+            'id' => $id,
+            'province' => 'Davao del Sur',
+            'par_number' => 'PAR-2026-11-0099',
+            'par_issued_to' => 'Mark Rezzel T. Sarabia',
+            'sub_par_number' => 'SUB-PAR-2026-11-0099A',
+            'sub_par_issued_to' => 'Ed Michael O. Flete',
+        ]);
+
+        // And it must come back down on the next pull.
+        $pulled = collect($this->getJson('/api/sync/pull')->json('equipment'))
+            ->firstWhere('id', $id);
+        $this->assertSame('PAR-2026-11-0099', $pulled['parNumber']);
+    }
+
+    public function test_new_equipment_without_a_par_number_is_rejected(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['parNumber' => null]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('equipment', ['id' => $id]);
+    }
+
+    public function test_new_equipment_without_a_par_holder_name_is_rejected(): void
+    {
+        $id = (string) Str::uuid();
+
+        // A PAR number with nobody named on it does not establish accountability.
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['parIssuedTo' => null]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('equipment', ['id' => $id]);
+    }
+
+    public function test_an_update_cannot_blank_out_the_par_holder_name(): void
+    {
+        $id = (string) Str::uuid();
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id))]);
+
+        $this->push([$this->change('equipment', 'UPDATE', $id, $this->equipmentPayload($id, [
+            'parIssuedTo' => null,
+            'updatedAt' => $this->at('+2 hours'),
+        ]))])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
+
+        $this->assertSame('Mark Rezzel T. Sarabia', Equipment::find($id)->par_issued_to);
+    }
+
+    public function test_new_equipment_without_a_property_number_is_rejected(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['propertyNumber' => null]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('equipment', ['id' => $id]);
+    }
+
+    public function test_new_equipment_without_an_acquisition_date_is_rejected(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['dateAcquired' => null]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+    }
+
+    public function test_a_duplicate_property_number_is_rejected(): void
+    {
+        $first = (string) Str::uuid();
+        $second = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $first, $this->equipmentPayload($first))])
+            ->assertJsonPath('results.0.status', 'APPLIED');
+
+        // Same property number on a different asset tag: one number, one item.
+        $this->push([$this->change('equipment', 'INSERT', $second, $this->equipmentPayload($second, [
+            'assetTag' => 'ICT-NEW-0002',
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('equipment', ['id' => $second]);
+    }
+
+    public function test_the_acquisition_date_is_stored_as_a_calendar_date(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['dateAcquired' => '2026-03-15']))])->assertOk();
+
+        // No time component invented, and no timezone shift off the given day.
+        $this->assertSame('2026-03-15', Equipment::find($id)->date_acquired->toDateString());
+        $this->assertSame(
+            '2026-03-15',
+            collect($this->getJson('/api/sync/pull')->json('equipment'))
+                ->firstWhere('id', $id)['dateAcquired'],
+        );
+    }
+
+    public function test_an_update_cannot_blank_the_property_number_or_acquisition_date(): void
+    {
+        $id = (string) Str::uuid();
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id))]);
+
+        $this->push([$this->change('equipment', 'UPDATE', $id, $this->equipmentPayload($id, [
+            'propertyNumber' => null,
+            'dateAcquired' => null,
+            'updatedAt' => $this->at('+2 hours'),
+        ]))])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
+
+        $row = Equipment::find($id);
+        $this->assertSame('2026-11-NEW-0001', $row->property_number);
+        $this->assertSame('2026-03-15', $row->date_acquired->toDateString());
+    }
+
+    public function test_a_blank_par_number_counts_as_missing(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['parNumber' => '   ']))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+    }
+
+    public function test_the_sub_par_number_stays_optional(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['subParNumber' => null]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.subParNumber', null);
+    }
+
+    public function test_equipment_registered_before_the_policy_stays_editable(): void
+    {
+        // A legacy row with no PAR must not become unsyncable, or the number
+        // could never be corrected from the app.
+        $legacyId = (string) Str::uuid();
+        Equipment::create([
+            'id' => $legacyId,
+            'asset_tag' => 'ICT-LEGACY-0001',
+            'model_name' => 'Old Asset',
+            'specifications' => [],
+        ]);
+
+        $this->push([$this->change('equipment', 'UPDATE', $legacyId, [
+            'id' => $legacyId,
+            'assetTag' => 'ICT-LEGACY-0001',
+            'modelName' => 'Old Asset',
+            'specifications' => [],
+            'parNumber' => 'PAR-2026-11-0100',
+            'province' => 'Davao de Oro',
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.parNumber', 'PAR-2026-11-0100');
+    }
+
+    public function test_an_update_cannot_blank_out_an_existing_par_number(): void
+    {
+        $id = (string) Str::uuid();
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id))]);
+
+        $this->push([$this->change('equipment', 'UPDATE', $id, $this->equipmentPayload($id, [
+            'parNumber' => null,
+            'updatedAt' => $this->at('+2 hours'),
+        ]))])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
+
+        // The accountable document survives an incomplete client payload.
+        $this->assertSame('PAR-2026-11-0099', Equipment::find($id)->par_number);
+    }
+
     public function test_duplicate_asset_tag_is_rejected_rather_than_silently_dropped(): void
     {
         $other = (string) Str::uuid();
@@ -222,6 +450,195 @@ class SyncTest extends TestCase
             ->assertJsonPath('results.0.status', 'REJECTED');
 
         $this->assertDatabaseMissing('equipment', ['id' => $other]);
+    }
+
+    /* ------------------ deployment + multi-part serials ------------------ */
+
+    public function test_deployment_details_round_trip_through_sync(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'actualUser' => 'Ed Michael O. Flete',
+            'position' => 'Information Technology Officer I',
+            'adUsername' => 'eoflete',
+            'anydeskNumber' => '1 234 567 890',
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.actualUser', 'Ed Michael O. Flete')
+            ->assertJsonPath('results.0.document.position', 'Information Technology Officer I')
+            ->assertJsonPath('results.0.document.adUsername', 'eoflete')
+            ->assertJsonPath('results.0.document.anydeskNumber', '1 234 567 890');
+    }
+
+    public function test_deployment_details_stay_optional_for_stock_in_the_storeroom(): void
+    {
+        $id = (string) Str::uuid();
+
+        // A spare laptop has no user, and a projector has no AD account.
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.actualUser', null)
+            ->assertJsonPath('results.0.document.adUsername', null);
+    }
+
+    private function desktopCategory(): string
+    {
+        $id = (string) Str::uuid();
+        Category::create([
+            'id' => $id,
+            'name' => 'Desktops',
+            'custom_fields' => ['fields' => []],
+            'default_loan_days' => 30,
+            'requires_monitor_serial' => true,
+        ]);
+
+        return $id;
+    }
+
+    public function test_a_desktop_needs_both_the_system_unit_and_monitor_serial(): void
+    {
+        $categoryId = $this->desktopCategory();
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'categoryId' => $categoryId,
+            'serialNumber' => 'MXL3421ABC',
+            'monitorSerialNumber' => null,
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('equipment', ['id' => $id]);
+    }
+
+    public function test_a_desktop_without_a_system_unit_serial_is_rejected(): void
+    {
+        $categoryId = $this->desktopCategory();
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'categoryId' => $categoryId,
+            'serialNumber' => null,
+            'monitorSerialNumber' => 'CNC4210XYZ',
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+    }
+
+    public function test_a_desktop_with_both_serials_is_accepted(): void
+    {
+        $categoryId = $this->desktopCategory();
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'categoryId' => $categoryId,
+            'serialNumber' => 'MXL3421ABC',
+            'monitorSerialNumber' => 'CNC4210XYZ',
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.serialNumber', 'MXL3421ABC')
+            ->assertJsonPath('results.0.document.monitorSerialNumber', 'CNC4210XYZ');
+    }
+
+    public function test_categories_without_the_flag_do_not_demand_a_monitor_serial(): void
+    {
+        $id = (string) Str::uuid();
+
+        // $this->categoryId is a plain Laptops category created in setUp.
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'categoryId' => $this->categoryId,
+            'serialNumber' => 'PF3ZK9QA',
+            'monitorSerialNumber' => null,
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED');
+    }
+
+    public function test_a_desktop_registered_before_the_flag_stays_editable(): void
+    {
+        $categoryId = $this->desktopCategory();
+
+        // Registered while the category still had the flag off.
+        $legacyId = (string) Str::uuid();
+        Equipment::create([
+            'id' => $legacyId,
+            'asset_tag' => 'ICT-OLD-DT-0001',
+            'model_name' => 'Old Desktop',
+            'category_id' => $categoryId,
+            'specifications' => [],
+        ]);
+
+        $this->push([$this->change('equipment', 'UPDATE', $legacyId, [
+            'id' => $legacyId,
+            'assetTag' => 'ICT-OLD-DT-0001',
+            'modelName' => 'Old Desktop',
+            'categoryId' => $categoryId,
+            'specifications' => [],
+            'location' => 'Room 2',
+            'updatedAt' => $this->at('+1 hour'),
+        ])])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
+    }
+
+    public function test_a_serial_cannot_collide_with_another_records_monitor_serial(): void
+    {
+        $categoryId = $this->desktopCategory();
+        $first = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $first, $this->equipmentPayload($first, [
+            'categoryId' => $categoryId,
+            'serialNumber' => 'MXL3421ABC',
+            'monitorSerialNumber' => 'CNC4210XYZ',
+        ]))])->assertJsonPath('results.0.status', 'APPLIED');
+
+        // Re-using the monitor serial as another machine's system unit serial
+        // would make one physical device resolve to two records.
+        $second = (string) Str::uuid();
+        $this->push([$this->change('equipment', 'INSERT', $second, $this->equipmentPayload($second, [
+            'assetTag' => 'ICT-NEW-0002',
+            'propertyNumber' => '2026-11-NEW-0002',
+            'serialNumber' => 'CNC4210XYZ',
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('equipment', ['id' => $second]);
+    }
+
+    public function test_the_system_unit_and_monitor_cannot_share_a_serial(): void
+    {
+        $categoryId = $this->desktopCategory();
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'categoryId' => $categoryId,
+            'serialNumber' => 'SAME-SERIAL',
+            'monitorSerialNumber' => 'SAME-SERIAL',
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+    }
+
+    public function test_the_monitor_serial_flag_syncs_on_the_category(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('categories', 'INSERT', $id, [
+            'id' => $id,
+            'name' => 'Desktops',
+            'customFields' => ['fields' => []],
+            'defaultLoanDays' => 30,
+            'requiresMonitorSerial' => true,
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.requiresMonitorSerial', true);
+
+        $this->assertTrue(Category::find($id)->requires_monitor_serial);
     }
 
     /* --------------------------- conflicts ---------------------------- */
@@ -321,13 +738,138 @@ class SyncTest extends TestCase
 
     public function test_operator_set_statuses_survive_loan_reconciliation(): void
     {
+        // Book the loan first, while the asset is still borrowable...
+        $id = (string) Str::uuid();
+        $this->push([$this->loan($id, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days'))])
+            ->assertJsonPath('results.0.status', 'APPLIED');
+
+        // ...then an operator pulls it for repair.
         Equipment::find($this->equipmentId)->forceFill(['status' => 'MAINTENANCE'])->save();
 
-        $id = (string) Str::uuid();
-        $this->push([$this->loan($id, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days'))]);
+        // Syncing a later edit to that loan must not reconcile the status back.
+        $this->push([$this->change('borrowings', 'UPDATE', $id, [
+            'id' => $id,
+            'equipmentId' => $this->equipmentId,
+            'borrowerName' => 'Ada Lovelace',
+            'borrowerEmail' => 'ada@example.org',
+            'issueDate' => $this->at('+30 days'),
+            'expectedReturnDate' => $this->at('+39 days'),
+            'status' => 'ISSUED',
+            'notes' => 'Handover note',
+            'updatedAt' => $this->at('+2 hours'),
+        ])])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
 
         // MAINTENANCE is a human decision; the sync engine must not overwrite it.
         $this->assertSame('MAINTENANCE', Equipment::find($this->equipmentId)->status);
+    }
+
+    /* --------------------- out of the loan pool ----------------------- */
+
+    /** @return array<int, array{0: string}> */
+    public static function nonBorrowableStatuses(): array
+    {
+        return [['ISSUED'], ['MAINTENANCE'], ['DECOMMISSIONED'], ['LOST']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonBorrowableStatuses')]
+    public function test_equipment_out_of_the_loan_pool_cannot_be_booked(string $status): void
+    {
+        Equipment::find($this->equipmentId)->forceFill(['status' => $status])->save();
+
+        $id = (string) Str::uuid();
+        $this->push([$this->loan($id, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days'))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('borrowing_transactions', ['id' => $id]);
+        $this->assertSame($status, Equipment::find($this->equipmentId)->status);
+    }
+
+    public function test_the_rejection_explains_that_an_issued_asset_is_not_shared_stock(): void
+    {
+        Equipment::find($this->equipmentId)->forceFill(['status' => 'ISSUED'])->save();
+
+        $id = (string) Str::uuid();
+        $message = $this->push([
+            $this->loan($id, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days')),
+        ])->json('results.0.message');
+
+        $this->assertStringContainsString('ICT-TEST-0001', $message);
+        $this->assertStringContainsString('not part of the loan pool', $message);
+    }
+
+    public function test_an_available_asset_can_still_be_booked(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->loan($id, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days'))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED');
+    }
+
+    public function test_a_borrowed_asset_can_still_take_a_future_loan(): void
+    {
+        // BORROWED is busy, not withdrawn: the overlap engine judges the dates.
+        $first = (string) Str::uuid();
+        $this->push([$this->loan($first, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days'))])
+            ->assertJsonPath('results.0.status', 'APPLIED');
+        $this->assertSame('BORROWED', Equipment::find($this->equipmentId)->status);
+
+        $later = (string) Str::uuid();
+        $this->push([$this->loan($later, $this->at('+2 hours'), $this->at('+90 days'), $this->at('+94 days'))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED');
+    }
+
+    public function test_returning_a_loan_still_syncs_after_the_asset_is_withdrawn(): void
+    {
+        $id = (string) Str::uuid();
+        $this->push([$this->loan($id, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days'))]);
+
+        // The asset is written off while still out on loan.
+        Equipment::find($this->equipmentId)->forceFill(['status' => 'LOST'])->save();
+
+        // The return must not be blocked — the guard applies to new loans only.
+        $this->push([$this->change('borrowings', 'UPDATE', $id, [
+            'id' => $id,
+            'equipmentId' => $this->equipmentId,
+            'borrowerName' => 'Ada Lovelace',
+            'borrowerEmail' => 'ada@example.org',
+            'issueDate' => $this->at('+30 days'),
+            'expectedReturnDate' => $this->at('+39 days'),
+            'actualReturnDate' => $this->at('+31 days'),
+            'status' => 'RETURNED',
+            'updatedAt' => $this->at('+2 hours'),
+        ])])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
+
+        $this->assertSame('RETURNED', BorrowingTransaction::find($id)->status);
+    }
+
+    public function test_a_request_can_be_filed_against_an_issued_asset(): void
+    {
+        // REQUESTED is not an active loan; it holds nothing, so a manager may
+        // still record the ask and reject it themselves.
+        Equipment::find($this->equipmentId)->forceFill(['status' => 'ISSUED'])->save();
+
+        $id = (string) Str::uuid();
+        $this->push([
+            $this->loan($id, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days'), 'REQUESTED'),
+        ])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
+    }
+
+    public function test_issued_is_a_legal_equipment_status(): void
+    {
+        $this->push([$this->change('equipment', 'UPDATE', $this->equipmentId, [
+            'id' => $this->equipmentId,
+            'assetTag' => 'ICT-TEST-0001',
+            'modelName' => 'ThinkPad T14',
+            'specifications' => [],
+            'status' => 'ISSUED',
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.status', 'ISSUED');
     }
 
     /* ---------------------------- ordering ---------------------------- */

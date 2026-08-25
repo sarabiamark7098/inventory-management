@@ -184,6 +184,8 @@ async function saveProfile() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  /* Padding rather than a bigger logo: keeps the tap area comfortable. */
+  padding: 0.4rem 0.25rem;
   text-decoration: none;
   color: inherit;
 }

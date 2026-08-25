@@ -81,6 +81,26 @@ class LoanCalculatorTest extends TestCase
         );
     }
 
+    public function test_issued_equipment_is_out_of_the_loan_pool(): void
+    {
+        $this->assertFalse(InventoryStatus::canBeBorrowed('ISSUED'));
+        $this->assertFalse(InventoryStatus::canBeBorrowed('MAINTENANCE'));
+        $this->assertFalse(InventoryStatus::canBeBorrowed('DECOMMISSIONED'));
+        $this->assertFalse(InventoryStatus::canBeBorrowed('LOST'));
+
+        $this->assertTrue(InventoryStatus::canBeBorrowed('AVAILABLE'));
+        // Busy, not withdrawn — a future loan is still legitimate.
+        $this->assertTrue(InventoryStatus::canBeBorrowed('BORROWED'));
+    }
+
+    public function test_an_asset_on_loan_must_be_returned_before_it_is_issued(): void
+    {
+        $this->assertFalse(InventoryStatus::canTransitionEquipment('BORROWED', 'ISSUED'));
+        $this->assertTrue(InventoryStatus::canTransitionEquipment('BORROWED', 'AVAILABLE'));
+        $this->assertTrue(InventoryStatus::canTransitionEquipment('AVAILABLE', 'ISSUED'));
+        $this->assertTrue(InventoryStatus::canTransitionEquipment('ISSUED', 'AVAILABLE'));
+    }
+
     public function test_equipment_status_machine_blocks_illegal_jumps(): void
     {
         $this->assertTrue(InventoryStatus::canTransitionEquipment('AVAILABLE', 'BORROWED'));

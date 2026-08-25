@@ -17,7 +17,14 @@ const error = ref(null)
 const form = ref(blank())
 
 function blank() {
-  return { id: null, name: '', description: '', defaultLoanDays: 7, fields: [] }
+  return {
+    id: null,
+    name: '',
+    description: '',
+    defaultLoanDays: 7,
+    requiresMonitorSerial: false,
+    fields: [],
+  }
 }
 
 const usage = computed(() => {
@@ -42,6 +49,7 @@ function openEdit(category) {
     name: category.name,
     description: category.description ?? '',
     defaultLoanDays: category.defaultLoanDays,
+    requiresMonitorSerial: Boolean(category.requiresMonitorSerial),
     fields: deepClone(category.customFields?.fields, []) ?? [],
   }
   dialogOpen.value = true
@@ -80,6 +88,7 @@ async function save() {
       name: form.value.name,
       description: form.value.description,
       defaultLoanDays: form.value.defaultLoanDays,
+      requiresMonitorSerial: form.value.requiresMonitorSerial,
       customFields: { fields: form.value.fields },
     }
     if (form.value.id) await inventory.updateCategory(form.value.id, payload)
@@ -181,6 +190,11 @@ function confirmDelete(category) {
             {{ category.defaultLoanDays === 1 ? 'day' : 'days' }}
           </p>
 
+          <p v-if="category.requiresMonitorSerial" class="muted">
+            <i class="pi pi-desktop" style="margin-right: 0.35rem" />
+            Requires system unit + monitor serials
+          </p>
+
           <div class="cat-fields">
             <span v-if="(category.customFields?.fields ?? []).length === 0" class="muted">
               No custom fields
@@ -233,6 +247,21 @@ function confirmDelete(category) {
             fluid
           />
           <span class="hint">Used to auto-fill due dates</span>
+        </div>
+
+        <div class="field span-2 monitor-toggle">
+          <Checkbox
+            v-model="form.requiresMonitorSerial"
+            input-id="cat-monitor-serial"
+            binary
+          />
+          <label for="cat-monitor-serial">
+            Records two serial numbers — system unit and monitor
+            <span class="hint">
+              Tick this for desktop sets. Registering equipment in this category
+              will then require both serials.
+            </span>
+          </label>
         </div>
 
         <div class="field span-2">
@@ -300,5 +329,27 @@ function confirmDelete(category) {
 
 .dialog-error {
   margin-bottom: 1rem;
+}
+
+.monitor-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--p-content-border-color);
+  border-radius: 0.5rem;
+}
+
+.monitor-toggle label {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--p-text-color);
+  font-weight: 500;
+}
+
+.monitor-toggle .hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-weight: 400;
 }
 </style>

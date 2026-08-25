@@ -55,7 +55,7 @@ HTTP sync protocol below, plus the status vocabulary duplicated in
 
 ### Epic 0: Accounts & Authentication
 - **US-0.1:** As a User, sign in without a password by receiving a one-time code at my work email.
-- **US-0.2:** As a System Admin, provision staff accounts and assign roles (`ADMIN`, `MANAGER`, `STAFF`).
+- **US-0.2:** As a System Admin, provision accounts and assign roles (`ADMIN`, `MANAGER`).
 - **US-0.3:** As a System Admin, deactivate an account and have it lose access immediately on every device.
 - **US-0.4:** As a User, update my own display name; only an admin can change my email or role.
 
@@ -67,11 +67,14 @@ HTTP sync protocol below, plus the status vocabulary duplicated in
 ### Epic 2: ICT Equipment Inventory Management
 - **US-2.1:** As an Inventory Manager, register new equipment with key attributes (Serial Number, Asset Tag, Category, Status, Location, Condition, Custom Specs).
 - **US-2.2:** As an Inventory Manager, generate, print, and scan QR codes/barcodes for fast device audits and lookups.
-- **US-2.3:** As an Inventory Manager, manage equipment status state transitions: `AVAILABLE`, `BORROWED`, `MAINTENANCE`, `DECOMMISSIONED`, `LOST`.
+- **US-2.3:** As an Inventory Manager, manage equipment status state transitions: `AVAILABLE`, `BORROWED`, `ISSUED`, `MAINTENANCE`, `DECOMMISSIONED`, `LOST`. `ISSUED` marks an asset permanently handed to a named user on a PAR, which takes it out of the loan pool entirely — unlike `BORROWED`, which is temporary.
 - **US-2.4:** As an Inventory Manager, filter, search, and export equipment lists offline.
+- **US-2.5:** As a Property Officer, record the accountability trail for each asset — Property Number, Date Acquired, Division, Section, Province, PAR number and the officer it is issued to (all required), plus an optional Sub-PAR number and holder for onward reassignment.
+- **US-2.6:** As an Inventory Manager, record who is actually using an asset (name, position, Active Directory account, AnyDesk number) separately from who is accountable for it on the PAR.
+- **US-2.7:** As an Inventory Manager, flag a category as recording two serial numbers, so a desktop set captures both the system unit and the monitor as one asset.
 
 ### Epic 3: Borrowing & Return Management
-- **US-3.1:** As a Borrower/Staff, request device loans specifying required dates and intended usage.
+- **US-3.1:** As an Inventory Manager, record a loan request on a borrower's behalf, specifying required dates and intended usage. Borrowers are named on the transaction and do not hold accounts.
 - **US-3.2:** As an Inventory Manager, process, approve, and issue equipment with digital barcode confirmation.
 - **US-3.3:** As an Inventory Manager, process returns, record item condition changes, and log damages or missing accessories.
 - **US-3.4:** As a System Admin, trigger automated overdue notifications and track borrowing history logs.
@@ -92,8 +95,8 @@ MySQL has no native UUID type, so ids are `CHAR(36)`. Timestamps use
 `DATETIME(3)` rather than `TIMESTAMP`, whose range ends in 2038 — loan due dates
 must be able to outlive that. All timestamps are stored and compared in UTC.
 
-The authoritative definition lives in `prisma/schema.prisma`; the generated DDL
-is `prisma/migrations/0_init/migration.sql`.
+The authoritative definition lives in `api/database/migrations/`; the block below
+is a readable summary of what those migrations produce.
 
 ```sql
 -- Categories Table
@@ -103,6 +106,8 @@ CREATE TABLE categories (
     description TEXT,
     custom_fields JSON NOT NULL,
     default_loan_days INT NOT NULL DEFAULT 7,
+    -- Desktop sets record a system unit serial and a monitor serial.
+    requires_monitor_serial TINYINT(1) NOT NULL DEFAULT 0,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     deleted_at DATETIME(3),
@@ -113,13 +118,30 @@ CREATE TABLE categories (
 CREATE TABLE equipment (
     id CHAR(36) PRIMARY KEY,
     asset_tag VARCHAR(100) NOT NULL UNIQUE,
+    property_number VARCHAR(100) UNIQUE,
+    date_acquired DATE,
     serial_number VARCHAR(100) UNIQUE,
+    monitor_serial_number VARCHAR(100) UNIQUE,
     category_id CHAR(36),
     model_name VARCHAR(255) NOT NULL,
     brand VARCHAR(100),
     status VARCHAR(50) NOT NULL DEFAULT 'AVAILABLE',
     `condition` VARCHAR(50) NOT NULL DEFAULT 'GOOD',
     location VARCHAR(255),
+    -- Government property accountability. Nullable so assets registered before
+    -- the policy stay syncable; the PAR pair is required on new registrations.
+    section VARCHAR(255),
+    division VARCHAR(255),
+    province VARCHAR(100),
+    par_number VARCHAR(100),
+    par_issued_to VARCHAR(255),
+    sub_par_number VARCHAR(100),
+    sub_par_issued_to VARCHAR(255),
+    -- Who is actually using the asset, and how support reaches it.
+    actual_user VARCHAR(255),
+    position VARCHAR(255),
+    ad_username VARCHAR(100),
+    anydesk_number VARCHAR(50),
     specifications JSON NOT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -127,6 +149,13 @@ CREATE TABLE equipment (
     INDEX equipment_category_id_idx (category_id),
     INDEX equipment_status_idx (status),
     INDEX equipment_updated_at_idx (updated_at),
+    INDEX equipment_par_number_idx (par_number),
+    INDEX equipment_par_issued_to_idx (par_issued_to),
+    INDEX equipment_province_idx (province),
+    INDEX equipment_office_idx (division, section),
+    INDEX equipment_actual_user_idx (actual_user),
+    INDEX equipment_ad_username_idx (ad_username),
+    INDEX equipment_anydesk_idx (anydesk_number),
     FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -177,6 +206,7 @@ CREATE TABLE sync_changes (
 2. **Push Phase (`POST /api/sync/push`):** Uploads local mutations.
 3. **Pull Phase (`GET /api/sync/pull?last_synced_at=TIMESTAMP`):** Downloads server updates changed since `last_synced_at`.
 4. **Conflict Rules:**
+   - **Loan Pool Rule:** Equipment in `ISSUED`, `MAINTENANCE`, `DECOMMISSIONED` or `LOST` cannot be booked at all. Enforced server-side on new loans, because an offline client may hold a stale status.
    - **Status Lock Rule:** Physical loan states (`BORROWED`, `ISSUED`) strictly enforce Server Validation. If dual checkout occurs offline, server flags the transaction as `CONFLICT_PENDING_REVIEW`.
    - **Attribute Updates:** Managed via Last-Write-Wins (LWW) utilizing UTC timestamps.
 

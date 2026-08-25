@@ -109,7 +109,17 @@ export const useSyncStore = defineStore('sync', () => {
     await db[table].put(doc)
   }
 
+  /**
+   * Applies a pull payload, returning the `updatedAt` of the earliest document
+   * it deliberately skipped (or null if it skipped nothing).
+   *
+   * The caller needs that value: a document skipped because it has unsynced
+   * local edits must NOT be left behind the checkpoint, or the server version
+   * is never offered again and the two copies silently diverge forever.
+   */
   async function applyPull(payload) {
+    let earliestSkipped = null
+
     for (const table of ['categories', 'equipment', 'borrowings']) {
       const docs = payload[table] ?? []
       if (docs.length === 0) continue
@@ -119,10 +129,17 @@ export const useSyncStore = defineStore('sync', () => {
         // A server-flagged conflict always wins, even over unsynced local edits,
         // so the operator sees the contested record immediately.
         const isConflict = table === 'borrowings' && doc.status === 'CONFLICT_PENDING_REVIEW'
-        if (dirty.has(doc.id) && !isConflict) continue
+        if (dirty.has(doc.id) && !isConflict) {
+          if (earliestSkipped === null || doc.updatedAt < earliestSkipped) {
+            earliestSkipped = doc.updatedAt
+          }
+          continue
+        }
         await applyServerDocument(table, doc, isConflict)
       }
     }
+
+    return earliestSkipped
   }
 
   /* ------------------------------------------------------------------ */
@@ -178,8 +195,18 @@ export const useSyncStore = defineStore('sync', () => {
   async function pullPhase() {
     const since = await getMeta('lastSyncedAt')
     const payload = await api.pull(since)
-    await applyPull(payload)
-    await setMeta('lastSyncedAt', payload.serverTime)
+    const earliestSkipped = await applyPull(payload)
+
+    /*
+     * Rewind the checkpoint to just before anything we skipped, so the next
+     * cycle offers those documents again once the local edits have drained.
+     * Advancing past them would strand the server's version permanently.
+     */
+    const checkpoint = earliestSkipped
+      ? new Date(new Date(earliestSkipped).getTime() - 1).toISOString()
+      : payload.serverTime
+
+    await setMeta('lastSyncedAt', checkpoint)
     return payload.serverTime
   }
 

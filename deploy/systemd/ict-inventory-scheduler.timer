@@ -1,0 +1,15 @@
+# Fires the Laravel scheduler every minute, which is what `schedule:run` expects
+# — it decides internally which tasks are actually due.
+
+[Unit]
+Description=Run ICT Inventory scheduled tasks every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+# If the server was asleep or down, run once on resume rather than replaying
+# every missed minute.
+Persistent=true
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

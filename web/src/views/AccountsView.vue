@@ -7,10 +7,13 @@ import { api, ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/domain/loan'
 import { describeAllowedDomains, emailPlaceholder, isAllowedEmail } from '@/domain/email'
+import { useIsMobile } from '@/composables/useBreakpoint'
 
 const auth = useAuthStore()
 const confirm = useConfirm()
 const toast = useToast()
+
+const isMobile = useIsMobile()
 
 const users = ref([])
 const roles = ref([])
@@ -24,7 +27,7 @@ const formError = ref(null)
 const form = ref(blank())
 
 function blank() {
-  return { id: null, name: '', email: '', role: 'STAFF', isActive: true }
+  return { id: null, name: '', email: '', role: 'MANAGER', isActive: true }
 }
 
 const allowedDomains = describeAllowedDomains()
@@ -150,7 +153,7 @@ function confirmDelete(user) {
   })
 }
 
-const roleSeverity = { ADMIN: 'danger', MANAGER: 'info', STAFF: 'secondary' }
+const roleSeverity = { ADMIN: 'danger', MANAGER: 'info' }
 </script>
 
 <template>
@@ -159,7 +162,7 @@ const roleSeverity = { ADMIN: 'danger', MANAGER: 'info', STAFF: 'secondary' }
       <div>
         <h1>Accounts</h1>
         <p>
-          Provision staff accounts and set what each person can do. Sign-in is
+          Provision accounts and set what each person can do. Sign-in is
           passwordless — everyone receives a one-time code by email.
         </p>
       </div>
@@ -187,6 +190,72 @@ const roleSeverity = { ADMIN: 'danger', MANAGER: 'info', STAFF: 'secondary' }
       </template>
     </Card>
 
+    <div v-if="isMobile" class="record-list">
+      <div v-if="loading" class="empty-state">
+        <ProgressSpinner style="width: 2.5rem; height: 2.5rem" />
+      </div>
+
+      <div v-else-if="users.length === 0" class="empty-state">
+        <i class="pi pi-users" />
+        <p><strong>No accounts match</strong></p>
+      </div>
+
+      <article v-for="user in users" :key="user.id" class="record-card">
+        <div class="record-card__head">
+          <div class="record-card__title">
+            <strong>
+              {{ user.name }}
+              <Tag v-if="user.id === auth.user?.id" value="you" severity="contrast" />
+            </strong>
+            <span>{{ user.email }}</span>
+          </div>
+          <Tag
+            :value="user.isActive ? 'Active' : 'Off'"
+            :severity="user.isActive ? 'success' : 'secondary'"
+          />
+        </div>
+
+        <dl class="record-card__meta">
+          <dt>Role</dt>
+          <dd>
+            <Tag :value="user.roleLabel" :severity="roleSeverity[user.role] ?? 'secondary'" />
+          </dd>
+          <dt>Last sign-in</dt>
+          <dd>{{ user.lastLoginAt ? formatDateTime(user.lastLoginAt) : 'Never' }}</dd>
+        </dl>
+
+        <div class="record-card__actions">
+          <Button
+            label="Edit"
+            icon="pi pi-pencil"
+            size="small"
+            severity="secondary"
+            outlined
+            @click="openEdit(user)"
+          />
+          <Button
+            :label="user.isActive ? 'Deactivate' : 'Reactivate'"
+            :icon="user.isActive ? 'pi pi-ban' : 'pi pi-check-circle'"
+            size="small"
+            :severity="user.isActive ? 'warn' : 'success'"
+            outlined
+            :disabled="user.id === auth.user?.id"
+            @click="toggleActive(user)"
+          />
+          <Button
+            label="Delete"
+            icon="pi pi-trash"
+            size="small"
+            severity="danger"
+            outlined
+            :disabled="user.id === auth.user?.id"
+            @click="confirmDelete(user)"
+          />
+        </div>
+      </article>
+    </div>
+
+    <template v-else>
     <DataTable :value="users" :loading="loading" data-key="id" striped-rows paginator :rows="15">
       <template #empty>
         <div class="empty-state">
@@ -265,12 +334,15 @@ const roleSeverity = { ADMIN: 'danger', MANAGER: 'info', STAFF: 'secondary' }
         </template>
       </Column>
     </DataTable>
+    </template>
+
 
     <Dialog
       v-model:visible="dialogOpen"
       modal
       :header="form.id ? 'Edit account' : 'Add account'"
       :style="{ width: '30rem' }"
+      :breakpoints="{ '767px': '100vw' }"
     >
       <Message v-if="formError" severity="error" :closable="false" style="margin-bottom: 1rem">
         {{ formError }}
@@ -305,8 +377,8 @@ const roleSeverity = { ADMIN: 'danger', MANAGER: 'info', STAFF: 'secondary' }
           fluid
         />
         <span class="hint">
-          Admins manage accounts. Managers register equipment and issue loans.
-          Staff can browse and request.
+          Admins manage accounts as well. Managers register equipment, issue
+          loans and record returns.
         </span>
       </div>
 

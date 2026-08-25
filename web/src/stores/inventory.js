@@ -5,7 +5,8 @@ import { ref, computed } from 'vue'
 import { db } from '@/db/local'
 import { enqueue } from '@/db/outbox'
 import { deepClone } from '@/domain/clone'
-import { calculateExpectedReturn, isOverdue, nowIso, uuid } from '@/domain/loan'
+import { calculateExpectedReturn, isOverdue, nowIso, toDateOnly, uuid } from '@/domain/loan'
+import { canBeBorrowed, explainNotBorrowable } from '@/domain/constants'
 
 /**
  * The single write path for the whole app.
@@ -86,6 +87,7 @@ export const useInventoryStore = defineStore('inventory', () => {
     return {
       total: equipment.value.length,
       available: byStatus.AVAILABLE ?? 0,
+      issued: byStatus.ISSUED ?? 0,
       maintenance: byStatus.MAINTENANCE ?? 0,
       lost: byStatus.LOST ?? 0,
       onLoan: activeLoans.value.length,
@@ -94,6 +96,30 @@ export const useInventoryStore = defineStore('inventory', () => {
       conflicts: conflicts.value.length,
     }
   })
+
+  /**
+   * Serials are checked across BOTH columns.
+   *
+   * A monitor's serial must not collide with another machine's system unit
+   * serial either, or scanning one physical device would resolve to two
+   * records. The server enforces the same rule; this just fails fast offline.
+   */
+  async function assertSerialsAreFree(serials, ignoreId) {
+    for (const serial of serials) {
+      if (!serial) continue
+      const clash = await db.equipment
+        .filter(
+          (row) =>
+            row.deletedAt == null &&
+            row.id !== ignoreId &&
+            (row.serialNumber === serial || row.monitorSerialNumber === serial),
+        )
+        .first()
+      if (clash) {
+        throw new Error(`Serial number "${serial}" is already used by ${clash.assetTag}.`)
+      }
+    }
+  }
 
   /* ----------------------------- categories --------------------------- */
 
@@ -105,6 +131,7 @@ export const useInventoryStore = defineStore('inventory', () => {
       description: input.description?.trim() || null,
       customFields: input.customFields ?? { fields: [] },
       defaultLoanDays: Number(input.defaultLoanDays) || 0,
+      requiresMonitorSerial: Boolean(input.requiresMonitorSerial),
       createdAt: ts,
       updatedAt: ts,
       deletedAt: null,
@@ -129,6 +156,9 @@ export const useInventoryStore = defineStore('inventory', () => {
       ...(patch.customFields !== undefined ? { customFields: patch.customFields } : {}),
       ...(patch.defaultLoanDays !== undefined
         ? { defaultLoanDays: Number(patch.defaultLoanDays) || 0 }
+        : {}),
+      ...(patch.requiresMonitorSerial !== undefined
+        ? { requiresMonitorSerial: Boolean(patch.requiresMonitorSerial) }
         : {}),
       updatedAt: nowIso(),
     })
@@ -166,17 +196,67 @@ export const useInventoryStore = defineStore('inventory', () => {
       .first()
     if (clash) throw new Error(`Asset tag "${assetTag}" is already in use.`)
 
+    // Government accountability: refuse here rather than letting the asset sit
+    // in the outbox and come back REJECTED long after the operator moved on.
+    const parNumber = input.parNumber?.trim() || null
+    if (!parNumber) throw new Error('A PAR number is required to register equipment.')
+
+    // A number with nobody named on it does not establish accountability.
+    const parIssuedTo = input.parIssuedTo?.trim() || null
+    if (!parIssuedTo) throw new Error('The PAR must name the officer it is issued to.')
+
+    const propertyNumber = input.propertyNumber?.trim() || null
+    if (!propertyNumber) throw new Error('A property number is required to register equipment.')
+
+    const dateAcquired = toDateOnly(input.dateAcquired)
+    if (!dateAcquired) throw new Error('An acquisition date is required to register equipment.')
+
+    const numberClash = await db.equipment
+      .where('propertyNumber')
+      .equals(propertyNumber)
+      .filter((row) => row.deletedAt == null)
+      .first()
+    if (numberClash) throw new Error(`Property number "${propertyNumber}" is already in use.`)
+
+    const serialNumber = input.serialNumber?.trim() || null
+    const monitorSerialNumber = input.monitorSerialNumber?.trim() || null
+
+    // A desktop set is one asset with two serialised parts.
+    const category = input.categoryId ? await db.categories.get(input.categoryId) : null
+    if (category?.requiresMonitorSerial) {
+      if (!serialNumber) throw new Error(`${category.name} needs a system unit serial number.`)
+      if (!monitorSerialNumber) throw new Error(`${category.name} needs a monitor serial number.`)
+    }
+    if (serialNumber && serialNumber === monitorSerialNumber) {
+      throw new Error('The system unit and monitor cannot share a serial number.')
+    }
+    await assertSerialsAreFree([serialNumber, monitorSerialNumber], null)
+
     const ts = nowIso()
     const doc = persistable({
       id: uuid(),
       assetTag,
-      serialNumber: input.serialNumber?.trim() || null,
+      propertyNumber,
+      dateAcquired,
+      serialNumber,
+      monitorSerialNumber,
       categoryId: input.categoryId || null,
       modelName: input.modelName.trim(),
       brand: input.brand?.trim() || null,
       status: input.status ?? 'AVAILABLE',
       condition: input.condition ?? 'GOOD',
       location: input.location?.trim() || null,
+      section: input.section?.trim() || null,
+      division: input.division?.trim() || null,
+      province: input.province?.trim() || null,
+      parNumber,
+      parIssuedTo,
+      subParNumber: input.subParNumber?.trim() || null,
+      subParIssuedTo: input.subParIssuedTo?.trim() || null,
+      actualUser: input.actualUser?.trim() || null,
+      position: input.position?.trim() || null,
+      adUsername: input.adUsername?.trim() || null,
+      anydeskNumber: input.anydeskNumber?.trim() || null,
       specifications: input.specifications ?? {},
       createdAt: ts,
       updatedAt: ts,
@@ -194,12 +274,44 @@ export const useInventoryStore = defineStore('inventory', () => {
     if (!current) throw new Error('Equipment not found.')
 
     const doc = persistable({ ...current, ...patch, updatedAt: nowIso() })
+
+    // The picker hands back a Date; the wire format is a calendar date string.
+    if (patch.dateAcquired !== undefined) doc.dateAcquired = toDateOnly(patch.dateAcquired)
+
     for (const key of ['assetTag', 'modelName']) {
       if (typeof doc[key] === 'string') doc[key] = doc[key].trim()
     }
-    for (const key of ['serialNumber', 'brand', 'location']) {
+    for (const key of [
+      'serialNumber',
+      'brand',
+      'location',
+      'section',
+      'division',
+      'province',
+      'propertyNumber',
+      'parNumber',
+      'parIssuedTo',
+      'subParNumber',
+      'subParIssuedTo',
+      'monitorSerialNumber',
+      'actualUser',
+      'position',
+      'adUsername',
+      'anydeskNumber',
+    ]) {
       if (typeof doc[key] === 'string') doc[key] = doc[key].trim() || null
     }
+
+    // An edit must never silently drop the accountable document.
+    if (doc.serialNumber && doc.serialNumber === doc.monitorSerialNumber) {
+      throw new Error('The system unit and monitor cannot share a serial number.')
+    }
+    await assertSerialsAreFree([doc.serialNumber, doc.monitorSerialNumber], id)
+
+    if (current.parNumber && !doc.parNumber) doc.parNumber = current.parNumber
+    if (current.parIssuedTo && !doc.parIssuedTo) doc.parIssuedTo = current.parIssuedTo
+    if (current.propertyNumber && !doc.propertyNumber) doc.propertyNumber = current.propertyNumber
+    if (current.dateAcquired && !doc.dateAcquired) doc.dateAcquired = current.dateAcquired
 
     await db.transaction('rw', [db.equipment, db.sync_queue], async () => {
       await db.equipment.put(doc)
@@ -232,8 +344,22 @@ export const useInventoryStore = defineStore('inventory', () => {
     const byTag = await db.equipment.where('assetTag').equals(trimmed).filter(alive).first()
     if (byTag) return byTag
 
+    const byProperty = await db.equipment
+      .where('propertyNumber')
+      .equals(trimmed)
+      .filter(alive)
+      .first()
+    if (byProperty) return byProperty
+
     const bySerial = await db.equipment.where('serialNumber').equals(trimmed).filter(alive).first()
     if (bySerial) return bySerial
+
+    const byMonitor = await db.equipment
+      .where('monitorSerialNumber')
+      .equals(trimmed)
+      .filter(alive)
+      .first()
+    if (byMonitor) return byMonitor
 
     // QR payloads are minted as `ICT:<uuid>` by the label generator.
     const id = trimmed.startsWith('ICT:') ? trimmed.slice(4) : trimmed
@@ -253,6 +379,10 @@ export const useInventoryStore = defineStore('inventory', () => {
   async function checkout(input) {
     const asset = await db.equipment.get(input.equipmentId)
     if (!asset || asset.deletedAt) throw new Error('Equipment not found.')
+    // Permanently issued, under repair, written off — out of the loan pool.
+    if (!canBeBorrowed(asset.status)) {
+      throw new Error(`${asset.assetTag} ${explainNotBorrowable(asset.status)}.`)
+    }
     if (asset.status !== 'AVAILABLE') {
       throw new Error(
         `${asset.assetTag} is currently ${asset.status.toLowerCase()} and cannot be issued.`,

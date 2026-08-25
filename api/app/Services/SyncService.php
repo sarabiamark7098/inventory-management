@@ -158,6 +158,9 @@ class SyncService
             'description' => $this->str($payload['description'] ?? null),
             'custom_fields' => Category::normalizeCustomFields($payload['customFields'] ?? null),
             'default_loan_days' => (int) ($payload['defaultLoanDays'] ?? $existing?->default_loan_days ?? 7),
+            'requires_monitor_serial' => (bool) ($payload['requiresMonitorSerial']
+                ?? $existing?->requires_monitor_serial
+                ?? false),
             'deleted_at' => $this->date($payload['deletedAt'] ?? null),
             'updated_at' => $updatedAt,
         ];
@@ -214,12 +217,127 @@ class SyncService
             ];
         }
 
+        /*
+         * Government property accountability: every newly registered asset must
+         * carry a PAR (Property Acknowledgement Receipt) naming the officer it
+         * is issued to. Enforced on INSERT only — equipment registered before
+         * this policy has to stay editable so the number can be filled in
+         * rather than the record becoming unsyncable.
+         */
+        $parNumber = $this->str($payload['parNumber'] ?? null);
+        $parIssuedTo = $this->str($payload['parIssuedTo'] ?? null);
+        $propertyNumber = $this->str($payload['propertyNumber'] ?? null);
+        $dateAcquired = $this->date($payload['dateAcquired'] ?? null);
+
+        if (! $existing) {
+            $missing = match (true) {
+                $propertyNumber === null => 'a property number',
+                $dateAcquired === null => 'an acquisition date',
+                $parNumber === null => 'a PAR number',
+                $parIssuedTo === null => 'the name the PAR is issued to',
+                default => null,
+            };
+
+            if ($missing !== null) {
+                return [
+                    'changeId' => $change['id'],
+                    'table' => 'equipment',
+                    'docId' => $change['docId'],
+                    'status' => 'REJECTED',
+                    'message' => "Asset \"{$assetTag}\" needs {$missing} before it can be registered.",
+                ];
+            }
+        }
+
+        // property_number is UNIQUE and names one physical item, so a clash is
+        // surfaced the same way an asset tag clash is rather than silently lost.
+        if ($propertyNumber !== null) {
+            $owner = Equipment::where('property_number', $propertyNumber)->first();
+            if ($owner && $owner->id !== $change['docId']) {
+                return [
+                    'changeId' => $change['id'],
+                    'table' => 'equipment',
+                    'docId' => $change['docId'],
+                    'status' => 'REJECTED',
+                    'message' => "Property number \"{$propertyNumber}\" already belongs to another record.",
+                    'document' => $owner->toSyncArray(),
+                ];
+            }
+        }
+
         $categoryId = $this->str($payload['categoryId'] ?? null);
+        $category = $categoryId ? Category::find($categoryId) : null;
+
+        $serialNumber = $this->str($payload['serialNumber'] ?? null);
+        $monitorSerial = $this->str($payload['monitorSerialNumber'] ?? null);
+
+        /*
+         * A desktop set is one asset with two serialised parts, so categories
+         * flagged `requires_monitor_serial` need both the system unit and the
+         * display recorded. Enforced on INSERT only, like the PAR fields, so
+         * assets registered before the flag was set stay editable.
+         */
+        if (! $existing && $category?->requires_monitor_serial) {
+            $missingSerial = match (true) {
+                $serialNumber === null => 'a system unit serial number',
+                $monitorSerial === null => 'a monitor serial number',
+                default => null,
+            };
+
+            if ($missingSerial !== null) {
+                return [
+                    'changeId' => $change['id'],
+                    'table' => 'equipment',
+                    'docId' => $change['docId'],
+                    'status' => 'REJECTED',
+                    'message' => "Asset \"{$assetTag}\" needs {$missingSerial}; {$category->name} records both.",
+                ];
+            }
+        }
+
+        /*
+         * Serials are checked across BOTH columns: a monitor's serial must not
+         * collide with some other machine's system unit serial either, or the
+         * scanner would resolve one physical device to two records.
+         */
+        foreach ([[$serialNumber, 'Serial number'], [$monitorSerial, 'Monitor serial number']] as [$value, $label]) {
+            if ($value === null) {
+                continue;
+            }
+            $owner = Equipment::whereKeyNot($change['docId'])
+                ->where(fn ($q) => $q->where('serial_number', $value)
+                    ->orWhere('monitor_serial_number', $value))
+                ->first();
+
+            if ($owner) {
+                return [
+                    'changeId' => $change['id'],
+                    'table' => 'equipment',
+                    'docId' => $change['docId'],
+                    'status' => 'REJECTED',
+                    'message' => "{$label} \"{$value}\" already belongs to another record.",
+                    'document' => $owner->toSyncArray(),
+                ];
+            }
+        }
+
+        if ($serialNumber !== null && $serialNumber === $monitorSerial) {
+            return [
+                'changeId' => $change['id'],
+                'table' => 'equipment',
+                'docId' => $change['docId'],
+                'status' => 'REJECTED',
+                'message' => 'The system unit and monitor cannot share a serial number.',
+            ];
+        }
 
         $attributes = [
             'asset_tag' => $assetTag,
-            'serial_number' => $this->str($payload['serialNumber'] ?? null),
-            'category_id' => $categoryId && Category::whereKey($categoryId)->exists() ? $categoryId : null,
+            'property_number' => $propertyNumber ?? $existing?->property_number,
+            'date_acquired' => $dateAcquired ?? $existing?->date_acquired,
+            'serial_number' => $serialNumber,
+            'monitor_serial_number' => $monitorSerial,
+            'category_id' => $category?->id,
             'model_name' => $this->str($payload['modelName'] ?? null) ?? $existing?->model_name ?? 'Unknown',
             'brand' => $this->str($payload['brand'] ?? null),
             'status' => InventoryStatus::oneOf(
@@ -233,6 +351,17 @@ class SyncService
                 $existing?->condition ?? 'GOOD',
             ),
             'location' => $this->str($payload['location'] ?? null),
+            'section' => $this->str($payload['section'] ?? null) ?? $existing?->section,
+            'division' => $this->str($payload['division'] ?? null) ?? $existing?->division,
+            'province' => $this->str($payload['province'] ?? null) ?? $existing?->province,
+            'par_number' => $parNumber ?? $existing?->par_number,
+            'par_issued_to' => $parIssuedTo ?? $existing?->par_issued_to,
+            'sub_par_number' => $this->str($payload['subParNumber'] ?? null),
+            'sub_par_issued_to' => $this->str($payload['subParIssuedTo'] ?? null),
+            'actual_user' => $this->str($payload['actualUser'] ?? null),
+            'position' => $this->str($payload['position'] ?? null),
+            'ad_username' => $this->str($payload['adUsername'] ?? null),
+            'anydesk_number' => $this->str($payload['anydeskNumber'] ?? null),
             'specifications' => is_array($payload['specifications'] ?? null) ? $payload['specifications'] : [],
             'deleted_at' => $this->date($payload['deletedAt'] ?? null),
             'updated_at' => $updatedAt,
@@ -289,6 +418,31 @@ class SyncService
         );
         $conflictReason = $this->str($payload['conflictReason'] ?? null);
         $conflicted = false;
+
+        /*
+         * An asset that is out of the loan pool cannot be booked at all.
+         *
+         * The client blocks this too, but an offline client may not have seen
+         * the status change yet, so the server is the one that decides. Only
+         * new loans are checked: an existing loan being returned or corrected
+         * must still be able to sync.
+         */
+        if ($equipmentId && ! $existing && InventoryStatus::isActiveLoan($status)) {
+            $asset = Equipment::find($equipmentId);
+
+            if ($asset && ! InventoryStatus::canBeBorrowed($asset->status)) {
+                $reason = InventoryStatus::explainNotBorrowable($asset->status);
+
+                return [
+                    'changeId' => $change['id'],
+                    'table' => 'borrowings',
+                    'docId' => $change['docId'],
+                    'status' => 'REJECTED',
+                    'message' => "{$asset->asset_tag} {$reason}.",
+                    'document' => $asset->toSyncArray(),
+                ];
+            }
+        }
 
         /*
          * Status Lock Rule: a loan that physically holds a device must not

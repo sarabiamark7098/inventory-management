@@ -18,7 +18,7 @@ class UserSeeder extends Seeder
 {
     public function run(): void
     {
-        $adminEmail = strtolower(env('SEED_ADMIN_EMAIL', 'icts.fo11@dswd.gov.ph'));
+        $adminEmail = strtolower((string) config('accounts.seed_admin.email'));
 
         if (! AllowedEmailDomain::passes($adminEmail)) {
             $this->command?->error(
@@ -32,7 +32,7 @@ class UserSeeder extends Seeder
         User::updateOrCreate(
             ['email' => $adminEmail],
             [
-                'name' => env('SEED_ADMIN_NAME', 'ICT Administrator'),
+                'name' => config('accounts.seed_admin.name'),
                 'role' => Role::ADMIN,
                 'is_active' => true,
             ],
