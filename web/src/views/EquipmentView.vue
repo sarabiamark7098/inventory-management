@@ -23,6 +23,7 @@ const statusFilter = ref(null)
 const categoryFilter = ref(null)
 const conditionFilter = ref(null)
 const provinceFilter = ref(null)
+const divisionFilter = ref(null)
 const filtersOpen = ref(false)
 
 const formOpen = ref(false)
@@ -46,6 +47,10 @@ const categoryOptions = computed(() => [
   ...inventory.categories.map((c) => ({ label: c.name, value: c.id })),
 ])
 
+const divisionOptions = computed(() =>
+  inventory.divisions.map((d) => ({ label: d.name, value: d.id })),
+)
+
 /** All filtering runs against the local store, so it works offline (US-2.4). */
 const filtered = computed(() => {
   const term = search.value.trim().toLowerCase()
@@ -53,6 +58,7 @@ const filtered = computed(() => {
     if (statusFilter.value && item.status !== statusFilter.value) return false
     if (conditionFilter.value && item.condition !== conditionFilter.value) return false
     if (provinceFilter.value && item.province !== provinceFilter.value) return false
+    if (divisionFilter.value && item.divisionId !== divisionFilter.value) return false
     if (categoryFilter.value === '__none__' && item.categoryId) return false
     if (
       categoryFilter.value &&
@@ -73,15 +79,14 @@ const filtered = computed(() => {
       item.position,
       item.adUsername,
       item.anydeskNumber,
+      item.remarks,
       item.modelName,
       item.brand,
       item.location,
-      item.section,
-      item.division,
+      inventory.officeLabel(item.divisionId),
+      inventory.officeLabel(item.sectionId),
       item.province,
-      item.parNumber,
       item.parIssuedTo,
-      item.subParNumber,
       item.subParIssuedTo,
       inventory.categoryById.get(item.categoryId)?.name,
       ...Object.values(item.specifications ?? {}).map((v) => String(v ?? '')),
@@ -99,7 +104,8 @@ const filtersActive = computed(
     statusFilter.value ||
     categoryFilter.value ||
     conditionFilter.value ||
-    provinceFilter.value,
+    provinceFilter.value ||
+    divisionFilter.value,
 )
 
 function clearFilters() {
@@ -108,6 +114,7 @@ function clearFilters() {
   categoryFilter.value = null
   conditionFilter.value = null
   provinceFilter.value = null
+  divisionFilter.value = null
 }
 
 function openCreate() {
@@ -160,18 +167,17 @@ function exportCsv() {
     ['Status', (r) => r.status],
     ['Condition', (r) => r.condition],
     ['Location', (r) => r.location],
-    ['Division', (r) => r.division],
-    ['Section', (r) => r.section],
+    ['Division', (r) => inventory.officeLabel(r.divisionId)],
+    ['Section', (r) => inventory.officeLabel(r.sectionId)],
     ['Province', (r) => r.province],
-    ['PAR Number', (r) => r.parNumber],
     ['PAR Issued To', (r) => r.parIssuedTo],
-    ['Sub-PAR Number', (r) => r.subParNumber],
     ['Sub-PAR Issued To', (r) => r.subParIssuedTo],
     ['Actual User', (r) => r.actualUser],
     ['Position', (r) => r.position],
     ['AD Username', (r) => r.adUsername],
     ['AnyDesk Number', (r) => r.anydeskNumber],
     ['Specifications', (r) => JSON.stringify(r.specifications ?? {})],
+    ['Remarks', (r) => r.remarks],
     ['Updated At', (r) => r.updatedAt],
   ]
 
@@ -235,7 +241,7 @@ function exportCsv() {
           <InputIcon class="pi pi-search" />
           <InputText
             v-model="search"
-            placeholder="Search tag, serial, user, AnyDesk, PAR…"
+            placeholder="Search tag, serial, user, office, AnyDesk…"
             aria-label="Search equipment"
             fluid
           />
@@ -286,6 +292,17 @@ function exportCsv() {
             placeholder="All provinces"
             show-clear
             aria-label="Filter by province"
+            fluid
+          />
+          <Select
+            v-model="divisionFilter"
+            :options="divisionOptions"
+            option-label="label"
+            option-value="value"
+            placeholder="All divisions"
+            show-clear
+            filter
+            aria-label="Filter by division"
             fluid
           />
         </div>
@@ -343,22 +360,22 @@ function exportCsv() {
             <dt>AnyDesk</dt>
             <dd class="mono">{{ item.anydeskNumber }}</dd>
           </template>
-          <dt>PAR</dt>
-          <dd class="mono">{{ item.parNumber ?? '—' }}</dd>
-          <dt>Issued to</dt>
+          <template v-if="item.remarks">
+            <dt>Remarks</dt>
+            <dd class="record-card__remarks">{{ item.remarks }}</dd>
+          </template>
+          <dt>PAR issued to</dt>
           <dd>{{ item.parIssuedTo ?? '—' }}</dd>
-          <template v-if="item.subParNumber">
-            <dt>Sub-PAR</dt>
-            <dd class="mono">{{ item.subParNumber }}</dd>
+          <template v-if="item.subParIssuedTo">
             <dt>Sub-PAR to</dt>
-            <dd>{{ item.subParIssuedTo ?? '—' }}</dd>
+            <dd>{{ item.subParIssuedTo }}</dd>
           </template>
           <dt>Province</dt>
           <dd>{{ item.province ?? '—' }}</dd>
           <dt>Division</dt>
-          <dd>{{ item.division ?? '—' }}</dd>
+          <dd>{{ inventory.officeLabel(item.divisionId) ?? '—' }}</dd>
           <dt>Section</dt>
-          <dd>{{ item.section ?? '—' }}</dd>
+          <dd>{{ inventory.officeLabel(item.sectionId) ?? '—' }}</dd>
           <dt>Condition</dt>
           <dd><StatusTag kind="condition" :value="item.condition" /></dd>
         </dl>
@@ -452,24 +469,24 @@ function exportCsv() {
         </template>
       </Column>
 
-      <Column field="parNumber" header="PAR" sortable>
+      <Column field="parIssuedTo" header="Accountable" sortable>
         <template #body="{ data }">
           <div class="asset-cell">
-            <strong class="mono">{{ data.parNumber ?? '—' }}</strong>
-            <span class="muted">{{ data.parIssuedTo ?? '—' }}</span>
-            <span v-if="data.subParNumber" class="muted mono">
-              Sub: {{ data.subParNumber }}
-              <template v-if="data.subParIssuedTo"> · {{ data.subParIssuedTo }}</template>
+            <strong>{{ data.parIssuedTo ?? '—' }}</strong>
+            <span v-if="data.subParIssuedTo" class="muted">
+              Sub-PAR: {{ data.subParIssuedTo }}
             </span>
           </div>
         </template>
       </Column>
 
-      <Column field="province" header="Office" sortable>
+      <Column field="divisionId" header="Office" sortable>
         <template #body="{ data }">
           <div class="asset-cell">
-            <strong>{{ data.province ?? '—' }}</strong>
-            <span class="muted">{{ data.section ?? data.division ?? '—' }}</span>
+            <strong>{{ inventory.officeLabel(data.divisionId) ?? '—' }}</strong>
+            <span class="muted">
+              {{ inventory.officeLabel(data.sectionId) ?? data.province ?? '—' }}
+            </span>
           </div>
         </template>
       </Column>
@@ -580,23 +597,28 @@ function exportCsv() {
           <div v-if="scanResult.anydeskNumber">
             <dt>AnyDesk</dt><dd class="mono">{{ scanResult.anydeskNumber }}</dd>
           </div>
+          <div v-if="scanResult.remarks" class="detail-remarks">
+            <dt>Remarks</dt><dd>{{ scanResult.remarks }}</dd>
+          </div>
           <div>
             <dt>Category</dt>
             <dd>{{ inventory.categoryById.get(scanResult.categoryId)?.name ?? '—' }}</dd>
           </div>
           <div><dt>Location</dt><dd>{{ scanResult.location ?? '—' }}</dd></div>
           <div><dt>Brand</dt><dd>{{ scanResult.brand ?? '—' }}</dd></div>
-          <div><dt>PAR</dt><dd class="mono">{{ scanResult.parNumber ?? '—' }}</dd></div>
-          <div><dt>Issued to</dt><dd>{{ scanResult.parIssuedTo ?? '—' }}</dd></div>
-          <div v-if="scanResult.subParNumber">
-            <dt>Sub-PAR</dt><dd class="mono">{{ scanResult.subParNumber }}</dd>
-          </div>
+          <div><dt>PAR issued to</dt><dd>{{ scanResult.parIssuedTo ?? '—' }}</dd></div>
           <div v-if="scanResult.subParIssuedTo">
             <dt>Sub-PAR to</dt><dd>{{ scanResult.subParIssuedTo }}</dd>
           </div>
           <div><dt>Province</dt><dd>{{ scanResult.province ?? '—' }}</dd></div>
-          <div><dt>Division</dt><dd>{{ scanResult.division ?? '—' }}</dd></div>
-          <div><dt>Section</dt><dd>{{ scanResult.section ?? '—' }}</dd></div>
+          <div>
+            <dt>Division</dt>
+            <dd>{{ inventory.officeLabel(scanResult.divisionId) ?? '—' }}</dd>
+          </div>
+          <div>
+            <dt>Section</dt>
+            <dd>{{ inventory.officeLabel(scanResult.sectionId) ?? '—' }}</dd>
+          </div>
           <div
             v-for="(value, key) in scanResult.specifications ?? {}"
             :key="key"
@@ -668,6 +690,11 @@ function exportCsv() {
   justify-content: flex-end;
 }
 
+.record-card__remarks {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .detail-tags {
   display: flex;
   gap: 0.4rem;
@@ -695,5 +722,18 @@ function exportCsv() {
   margin: 0;
   font-weight: 500;
   text-align: right;
+}
+
+/* Prose needs room to wrap; the right-aligned value column is for short facts. */
+.detail-remarks {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.detail-remarks dd {
+  text-align: left;
+  font-weight: 400;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

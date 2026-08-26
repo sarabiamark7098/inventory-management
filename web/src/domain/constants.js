@@ -116,8 +116,8 @@ export const BORROWING_STATUS_LABEL = {
  * asset; a Sub-PAR covers items reassigned onward from that officer, so it is
  * optional. Both are recorded per asset and are what auditors reconcile against.
  *
- * The lists below are suggestions for the UI only — the API stores whatever
- * string is sent, so an office can type a unit that is not listed here.
+ * Provinces are a fixed list; divisions and sections come from the office
+ * register (see the Offices screen), not from constants.
  */
 export const PROVINCES = [
   'Davao de Oro',
@@ -128,25 +128,3 @@ export const PROVINCES = [
   'Davao City',
 ]
 
-export const DIVISIONS = [
-  'Office of the Regional Director',
-  'Administrative Division',
-  'Financial Management Division',
-  'Policy and Plans Division',
-  'Promotive Services Division',
-  'Protective Services Division',
-  'Disaster Response Management Division',
-]
-
-export const SECTIONS = [
-  'Information and Communications Technology Section',
-  'General Services Section',
-  'Human Resource Management and Development Section',
-  'Property and Supply Section',
-  'Records and Archives Section',
-  'Accounting Section',
-  'Budget Section',
-  'Cash Section',
-  'Social Marketing Section',
-  'Planning and Monitoring Section',
-]

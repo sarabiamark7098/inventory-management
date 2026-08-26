@@ -134,21 +134,43 @@ is audited against:
 | --- | --- | --- |
 | Property number | yes | Official government identifier; unique, and the scanner resolves it |
 | Date acquired | yes | Calendar date, drives useful-life reporting |
-| Division | yes | Office unit holding the asset |
-| Section | yes | Unit within the division |
+| Division | yes | From the office register |
+| Section | **no** | From the register, filtered to the chosen division |
 | Province | yes | Region XI provinces offered by default, free text allowed |
-| PAR number | yes | Property Acknowledgement Receipt |
 | PAR issued to | yes | The accountable officer named on the PAR |
-| Sub-PAR number | no | Only when reassigned onward from that officer |
-| Sub-PAR issued to | only with a Sub-PAR number | Who holds it now |
+| Sub-PAR issued to | no | Who holds it after onward reassignment |
 | Actual user | no | The person actually using it — often not the accountable officer |
 | Position | no | Their job position |
 | Active Directory user | no | AD account on that machine |
 | AnyDesk number | no | Remote support id |
+| Remarks | no | Free text, after the specifications — anything the columns above have no place for |
 
-The last four are optional by design: a spare laptop in the storeroom has no
+The last five are optional by design: a spare laptop in the storeroom has no
 user, and a projector has no Active Directory account. Requiring them would
 block registering stock that has not been deployed yet.
+
+Remarks are a `TEXT` column, not a capped string — a maintenance history
+outgrows 255 characters quickly, and truncation would drop the newest entry.
+Unlike the PAR fields, clearing remarks in the form is treated as a real edit
+and sticks; the PAR fields are protected from being blanked by an incomplete
+payload, but a note the operator deliberately erased should stay erased.
+
+### The office register
+
+Divisions and sections are one self-referencing table rather than free text: an
+office with no parent **is** a division, one with a parent is a section inside
+it. Typed text made "Administrative Division" and "Admin Division" two different
+offices as far as any report was concerned.
+
+Managed on the **Offices** screen and seeded from the field office's own
+register (81 offices — 10 divisions, 71 sections). Equipment points at rows, so
+renaming an office updates every asset at once.
+
+Guards worth knowing: a section cannot belong to another section, an office
+cannot be its own division, codes are unique, a division holding sections cannot
+be demoted to one, and an office still holding assets or sections cannot be
+removed. The server rejects a section that does not belong to the division it is
+filed under.
 
 ### Desktop sets: two serial numbers
 
@@ -167,11 +189,12 @@ collide with another machine's system unit serial, and one asset cannot use the
 same serial for both parts — otherwise scanning one physical device would
 resolve to two records. The scanner resolves either serial to the same asset.
 
-The PAR pair is enforced **on new registrations only** — in the form, in the
+Property number, acquisition date, division and PAR holder are enforced **on new
+registrations only** — in the form, in the
 Pinia store, and again in `SyncService::applyEquipment()`. Equipment registered
 before this policy keeps syncing, so the numbers can be corrected from the app
 instead of the record becoming impossible to save. An update can never blank out
-a PAR number or holder that is already recorded.
+a PAR holder or division that is already recorded.
 
 Property number, PAR, holder, province, division and section are searchable,
 filterable by province, included in the offline CSV export, and printed on the
@@ -262,7 +285,7 @@ again — the two copies would silently diverge forever.
 cd api && php artisan test
 ```
 
-104 tests / 360 assertions covering the loan maths, the conflict engine in both
+118 tests / 408 assertions covering the loan maths, the conflict engine in both
 arrival orders, Last-Write-Wins, equipment reconciliation, request validation,
 the full OTP lifecycle (expiry, reuse, brute force, rate limiting, enumeration
 resistance), the email domain policy, property accountability (PAR required on registration,

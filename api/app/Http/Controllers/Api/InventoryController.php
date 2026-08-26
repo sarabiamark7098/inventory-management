@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\BorrowingTransaction;
 use App\Models\Category;
 use App\Models\Equipment;
+use App\Models\Office;
 use App\Services\SyncService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -23,6 +24,38 @@ class InventoryController extends Controller
     public function __construct(protected SyncService $sync) {}
 
     /* ----------------------------- reads ----------------------------- */
+
+    /**
+     * The office register: divisions, each with its sections.
+     *
+     * Returned as a tree because that is how every consumer uses it — a
+     * cascading pair of pickers — and flattening it only to re-nest on the
+     * client is work nobody needs.
+     */
+    public function offices(Request $request): JsonResponse
+    {
+        $query = Office::query();
+        $this->applySoftDeleteFilter($query, $request);
+
+        if ($search = $request->query('search')) {
+            $like = '%'.$search.'%';
+            $query->where(fn ($q) => $q->where('name', 'like', $like)->orWhere('code', 'like', $like));
+        }
+
+        $offices = $query->orderBy('name')->get();
+        $sections = $offices->whereNotNull('division_id')->groupBy('division_id');
+
+        return response()->json([
+            'data' => $offices->map->toSyncArray()->values()->all(),
+            'tree' => $offices->whereNull('division_id')->values()->map(fn ($division) => [
+                'id' => $division->id,
+                'code' => $division->code,
+                'name' => $division->name,
+                'sections' => ($sections[$division->id] ?? collect())
+                    ->map->toSyncArray()->values()->all(),
+            ])->all(),
+        ]);
+    }
 
     public function categories(Request $request): JsonResponse
     {
@@ -134,7 +167,7 @@ class InventoryController extends Controller
 
     protected function delegate(string $table, string $action, string $docId, array $payload): JsonResponse
     {
-        abort_unless(in_array($table, ['categories', 'equipment', 'borrowings'], true), 404);
+        abort_unless(in_array($table, ['offices', 'categories', 'equipment', 'borrowings'], true), 404);
 
         if (! Str::isUuid($docId)) {
             return response()->json(['error' => 'Resource id must be a UUID.'], 422);

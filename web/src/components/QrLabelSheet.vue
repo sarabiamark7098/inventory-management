@@ -50,7 +50,6 @@ watch(
           <span v-if="item.propertyNumber" class="mono">{{ item.propertyNumber }}</span>
           <span>{{ item.modelName }}</span>
           <span v-if="item.serialNumber" class="mono serial">SN {{ item.serialNumber }}</span>
-          <span v-if="item.parNumber" class="mono serial">{{ item.parNumber }}</span>
           <span v-if="item.parIssuedTo" class="serial">{{ item.parIssuedTo }}</span>
         </figcaption>
       </figure>

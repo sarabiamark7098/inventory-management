@@ -63,15 +63,17 @@ HTTP sync protocol below, plus the status vocabulary duplicated in
 - **US-1.1:** As an Admin, create, update, and soft-delete equipment categories (e.g., Laptops, Networking, Peripherals).
 - **US-1.2:** As an Admin, define dynamic custom metadata fields (JSON schema) per category (e.g., RAM/Processor for Laptops, MAC Address for Routers).
 - **US-1.3:** As an Admin, set default loan durations per category to enforce auto-calculated return dates.
+- **US-1.4:** As an Admin, manage the office register — divisions and the sections within them — so equipment is filed against a real office rather than typed text.
 
 ### Epic 2: ICT Equipment Inventory Management
 - **US-2.1:** As an Inventory Manager, register new equipment with key attributes (Serial Number, Asset Tag, Category, Status, Location, Condition, Custom Specs).
 - **US-2.2:** As an Inventory Manager, generate, print, and scan QR codes/barcodes for fast device audits and lookups.
 - **US-2.3:** As an Inventory Manager, manage equipment status state transitions: `AVAILABLE`, `BORROWED`, `ISSUED`, `MAINTENANCE`, `DECOMMISSIONED`, `LOST`. `ISSUED` marks an asset permanently handed to a named user on a PAR, which takes it out of the loan pool entirely — unlike `BORROWED`, which is temporary.
 - **US-2.4:** As an Inventory Manager, filter, search, and export equipment lists offline.
-- **US-2.5:** As a Property Officer, record the accountability trail for each asset — Property Number, Date Acquired, Division, Section, Province, PAR number and the officer it is issued to (all required), plus an optional Sub-PAR number and holder for onward reassignment.
+- **US-2.5:** As a Property Officer, record the accountability trail for each asset — Property Number, Date Acquired, Division, Province and the officer the PAR is issued to (all required), plus an optional Section and Sub-PAR holder for onward reassignment.
 - **US-2.6:** As an Inventory Manager, record who is actually using an asset (name, position, Active Directory account, AnyDesk number) separately from who is accountable for it on the PAR.
 - **US-2.7:** As an Inventory Manager, flag a category as recording two serial numbers, so a desktop set captures both the system unit and the monitor as one asset.
+- **US-2.8:** As an Inventory Manager, add free-text remarks to an asset for anything the structured fields have no column for — defect history, transfer notes, why a unit is set aside.
 
 ### Epic 3: Borrowing & Return Management
 - **US-3.1:** As an Inventory Manager, record a loan request on a borrower's behalf, specifying required dates and intended usage. Borrowers are named on the transaction and do not hold accounts.
@@ -114,6 +116,20 @@ CREATE TABLE categories (
     INDEX categories_updated_at_idx (updated_at)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- Offices Table: divisions and the sections inside them.
+-- division_id NULL means this office IS a division.
+CREATE TABLE offices (
+    id CHAR(36) PRIMARY KEY,
+    code VARCHAR(50) NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
+    division_id CHAR(36),
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    deleted_at DATETIME(3),
+    INDEX offices_division_idx (division_id),
+    FOREIGN KEY (division_id) REFERENCES offices(id) ON DELETE RESTRICT
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- Equipment Table
 CREATE TABLE equipment (
     id CHAR(36) PRIMARY KEY,
@@ -130,12 +146,10 @@ CREATE TABLE equipment (
     location VARCHAR(255),
     -- Government property accountability. Nullable so assets registered before
     -- the policy stay syncable; the PAR pair is required on new registrations.
-    section VARCHAR(255),
-    division VARCHAR(255),
+    division_id CHAR(36),          -- office register; required on new records
+    section_id CHAR(36),           -- optional
     province VARCHAR(100),
-    par_number VARCHAR(100),
     par_issued_to VARCHAR(255),
-    sub_par_number VARCHAR(100),
     sub_par_issued_to VARCHAR(255),
     -- Who is actually using the asset, and how support reaches it.
     actual_user VARCHAR(255),
@@ -143,20 +157,23 @@ CREATE TABLE equipment (
     ad_username VARCHAR(100),
     anydesk_number VARCHAR(50),
     specifications JSON NOT NULL,
+    remarks TEXT,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     deleted_at DATETIME(3),
     INDEX equipment_category_id_idx (category_id),
     INDEX equipment_status_idx (status),
     INDEX equipment_updated_at_idx (updated_at),
-    INDEX equipment_par_number_idx (par_number),
     INDEX equipment_par_issued_to_idx (par_issued_to),
     INDEX equipment_province_idx (province),
-    INDEX equipment_office_idx (division, section),
+    INDEX equipment_division_idx (division_id),
+    INDEX equipment_section_idx (section_id),
     INDEX equipment_actual_user_idx (actual_user),
     INDEX equipment_ad_username_idx (ad_username),
     INDEX equipment_anydesk_idx (anydesk_number),
-    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
+    FOREIGN KEY (division_id) REFERENCES offices(id) ON DELETE RESTRICT,
+    FOREIGN KEY (section_id) REFERENCES offices(id) ON DELETE RESTRICT
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- Borrowing Transactions Table

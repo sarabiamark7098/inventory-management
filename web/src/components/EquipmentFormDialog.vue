@@ -6,12 +6,10 @@ import SpecificationFields from './SpecificationFields.vue'
 import { deepClone } from '@/domain/clone'
 import { fromDateOnly } from '@/domain/loan'
 import {
-  DIVISIONS,
   EQUIPMENT_CONDITIONS,
   EQUIPMENT_STATUSES,
   EQUIPMENT_TRANSITIONS,
   PROVINCES,
-  SECTIONS,
   canTransitionEquipment,
 } from '@/domain/constants'
 import { useInventoryStore } from '@/stores/inventory'
@@ -47,14 +45,13 @@ function blankForm(source = null) {
     status: source?.status ?? 'AVAILABLE',
     condition: source?.condition ?? 'GOOD',
     location: source?.location ?? '',
-    section: source?.section ?? '',
-    division: source?.division ?? '',
+    divisionId: source?.divisionId ?? null,
+    sectionId: source?.sectionId ?? null,
     province: source?.province ?? '',
-    parNumber: source?.parNumber ?? '',
     parIssuedTo: source?.parIssuedTo ?? '',
-    subParNumber: source?.subParNumber ?? '',
     subParIssuedTo: source?.subParIssuedTo ?? '',
     specifications: deepClone(source?.specifications, {}) ?? {},
+    remarks: source?.remarks ?? '',
   }
 }
 
@@ -72,6 +69,24 @@ const categoryOptions = computed(() => [
   { label: 'Uncategorised', value: null },
   ...inventory.categories.map((c) => ({ label: c.name, value: c.id })),
 ])
+
+const divisionOptions = computed(() =>
+  inventory.divisions.map((d) => ({ label: d.name, value: d.id })),
+)
+
+/**
+ * Only the chosen division's sections are offered, so an asset cannot be filed
+ * under a section belonging to a different division.
+ */
+const sectionOptions = computed(() =>
+  (inventory.sectionsByDivision.get(form.value.divisionId) ?? [])
+    .map((sec) => ({ label: sec.name, value: sec.id })),
+)
+
+function onDivisionChange(value) {
+  // The previous section belongs to the old division; it cannot carry over.
+  form.value = { ...form.value, divisionId: value, sectionId: null }
+}
 
 const selectedCategory = computed(() => inventory.categoryById.get(form.value.categoryId))
 
@@ -130,28 +145,15 @@ async function save() {
     return (error.value = 'The system unit and monitor cannot share a serial number.')
   }
 
-  // Accountability is mandatory for government property. On an existing record
-  // the PAR is only enforced if it already had one, so legacy assets can be
-  // opened and corrected instead of being impossible to save.
-  for (const [key, label] of [
-    ['section', 'Section'],
-    ['division', 'Division'],
-    ['province', 'Province'],
-  ]) {
-    if (!String(form.value[key] ?? '').trim()) return (error.value = `${label} is required.`)
-  }
-  if (!form.value.parNumber.trim()) {
-    return (error.value = 'PAR number is required for government property.')
+  // Accountability is mandatory for government property. Division comes from
+  // the office register and is required; section is optional, because plenty of
+  // offices assign equipment at division level.
+  if (!form.value.divisionId) return (error.value = 'Division is required.')
+  if (!String(form.value.province ?? '').trim()) {
+    return (error.value = 'Province is required.')
   }
   if (!form.value.parIssuedTo.trim()) {
     return (error.value = 'Enter the name the PAR is issued to.')
-  }
-  // A Sub-PAR without a holder is meaningless; require the pair together.
-  if (form.value.subParNumber.trim() && !form.value.subParIssuedTo.trim()) {
-    return (error.value = 'Enter the name the Sub-PAR is issued to.')
-  }
-  if (form.value.subParIssuedTo.trim() && !form.value.subParNumber.trim()) {
-    return (error.value = 'Enter the Sub-PAR number for that holder.')
   }
 
   const specError = validateSpecifications()
@@ -344,24 +346,35 @@ async function save() {
         <label for="eq-division">Division <span class="required">*</span></label>
         <Select
           id="eq-division"
-          v-model="form.division"
-          :options="DIVISIONS"
-          editable
-          placeholder="Select or type"
+          :model-value="form.divisionId"
+          :options="divisionOptions"
+          option-label="label"
+          option-value="value"
+          filter
+          placeholder="Select a division"
           fluid
+          @update:model-value="onDivisionChange"
         />
+        <span class="hint">From the office register</span>
       </div>
 
       <div class="field">
-        <label for="eq-section">Section <span class="required">*</span></label>
+        <label for="eq-section">Section</label>
         <Select
           id="eq-section"
-          v-model="form.section"
-          :options="SECTIONS"
-          editable
-          placeholder="Select or type"
+          v-model="form.sectionId"
+          :options="sectionOptions"
+          option-label="label"
+          option-value="value"
+          :disabled="!form.divisionId"
+          filter
+          show-clear
+          :placeholder="form.divisionId ? 'Optional' : 'Choose a division first'"
           fluid
         />
+        <span class="hint">
+          Optional — leave blank when the asset sits at division level
+        </span>
       </div>
 
       <div class="field">
@@ -377,18 +390,6 @@ async function save() {
       </div>
 
       <div class="field">
-        <label for="eq-par">PAR number <span class="required">*</span></label>
-        <InputText
-          id="eq-par"
-          v-model="form.parNumber"
-          placeholder="PAR-2026-11-0001"
-          class="mono"
-          fluid
-        />
-        <span class="hint">Property Acknowledgement Receipt</span>
-      </div>
-
-      <div class="field">
         <label for="eq-par-name">PAR issued to <span class="required">*</span></label>
         <InputText
           id="eq-par-name"
@@ -397,18 +398,6 @@ async function save() {
           fluid
         />
         <span class="hint">Accountable officer named on the PAR</span>
-      </div>
-
-      <div class="field">
-        <label for="eq-subpar">Sub-PAR number</label>
-        <InputText
-          id="eq-subpar"
-          v-model="form.subParNumber"
-          placeholder="Optional"
-          class="mono"
-          fluid
-        />
-        <span class="hint">Only when reassigned onward from the accountable officer</span>
       </div>
 
       <div class="field">
@@ -427,6 +416,20 @@ async function save() {
 
     <span class="spec-heading">Specifications</span>
     <SpecificationFields v-model="form.specifications" :fields="customFields" />
+
+    <Divider />
+
+    <div class="field">
+      <label for="eq-remarks">Remarks</label>
+      <Textarea
+        id="eq-remarks"
+        v-model="form.remarks"
+        rows="3"
+        placeholder="Anything the fields above have no place for — defect history, transfer notes, why this unit is set aside."
+        fluid
+      />
+      <span class="hint">Optional. Shown on the asset and included in the CSV export.</span>
+    </div>
 
     <template #footer>
       <Button

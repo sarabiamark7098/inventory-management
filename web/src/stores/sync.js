@@ -120,7 +120,7 @@ export const useSyncStore = defineStore('sync', () => {
   async function applyPull(payload) {
     let earliestSkipped = null
 
-    for (const table of ['categories', 'equipment', 'borrowings']) {
+    for (const table of ['offices', 'categories', 'equipment', 'borrowings']) {
       const docs = payload[table] ?? []
       if (docs.length === 0) continue
 

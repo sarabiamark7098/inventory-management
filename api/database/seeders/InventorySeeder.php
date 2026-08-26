@@ -24,6 +24,14 @@ class InventorySeeder extends Seeder
 
     public function run(): void
     {
+        // Resolved by code: the office register is the source of truth for the
+        // org chart, and codes are its stable business key.
+        $office = fn (string $code) => \App\Models\Office::where('code', $code)->value('id');
+        $ict = $office('XI-FO-PPD-ICT');
+        $smu = $office('XI-FO-SMU');
+        $ppd = $office('XI-FO-PPD');
+        $ord = $office('XI-FO-ORD');
+
         $categories = [
             [
                 'id' => self::CAT_LAPTOPS,
@@ -86,12 +94,10 @@ class InventorySeeder extends Seeder
                 'model_name' => 'ThinkPad T14 Gen 4',
                 'brand' => 'Lenovo',
                 'location' => 'ICT Storeroom / Shelf A',
-                'section' => 'Information and Communications Technology Section',
-                'division' => 'Administrative Division',
+                'division_id' => $ppd,
+                'section_id' => $ict,
                 'province' => 'Davao del Sur',
-                'par_number' => 'PAR-2026-11-0001',
                 'par_issued_to' => 'Mark Rezzel T. Sarabia',
-                'sub_par_number' => null,
                 'sub_par_issued_to' => null,
                 'actual_user' => 'Mark Rezzel T. Sarabia',
                 'position' => 'Information Technology Officer II',
@@ -109,12 +115,10 @@ class InventorySeeder extends Seeder
                 'model_name' => 'Latitude 5440',
                 'brand' => 'Dell',
                 'location' => 'ICT Storeroom / Shelf A',
-                'section' => 'Information and Communications Technology Section',
-                'division' => 'Administrative Division',
+                'division_id' => $ppd,
+                'section_id' => $ict,
                 'province' => 'Davao del Sur',
-                'par_number' => 'PAR-2026-11-0002',
                 'par_issued_to' => 'Mark Rezzel T. Sarabia',
-                'sub_par_number' => 'SUB-PAR-2026-11-0002A',
                 'sub_par_issued_to' => 'Ed Michael O. Flete',
                 'specifications' => ['processor' => 'Intel Core i7-1355U', 'ram' => '32GB', 'storage_gb' => 1024],
             ],
@@ -128,12 +132,10 @@ class InventorySeeder extends Seeder
                 'model_name' => 'Catalyst 2960-X',
                 'brand' => 'Cisco',
                 'location' => 'Server Room / Rack B',
-                'section' => 'Information and Communications Technology Section',
-                'division' => 'Administrative Division',
+                'division_id' => $ppd,
+                'section_id' => $ict,
                 'province' => 'Davao del Norte',
-                'par_number' => 'PAR-2026-11-0003',
                 'par_issued_to' => 'ICT Section Head',
-                'sub_par_number' => null,
                 'sub_par_issued_to' => null,
                 'specifications' => ['mac_address' => '00:1A:2B:3C:4D:5E', 'ports' => 24, 'poe' => true],
             ],
@@ -148,12 +150,10 @@ class InventorySeeder extends Seeder
                 'model_name' => 'OptiPlex 7010 + P2422H',
                 'brand' => 'Dell',
                 'location' => 'ICT Office / Workstation 3',
-                'section' => 'Information and Communications Technology Section',
-                'division' => 'Administrative Division',
+                'division_id' => $ppd,
+                'section_id' => $ict,
                 'province' => 'Davao del Sur',
-                'par_number' => 'PAR-2026-11-0005',
                 'par_issued_to' => 'Mark Rezzel T. Sarabia',
-                'sub_par_number' => null,
                 'sub_par_issued_to' => null,
                 'actual_user' => 'Ed Michael O. Flete',
                 'position' => 'Information Technology Officer I',
@@ -171,12 +171,10 @@ class InventorySeeder extends Seeder
                 'model_name' => 'EB-X51 Projector',
                 'brand' => 'Epson',
                 'location' => 'Media Room',
-                'section' => 'Social Marketing Section',
-                'division' => 'Policy and Plans Division',
+                'division_id' => $ord,
+                'section_id' => $smu,
                 'province' => 'Davao Oriental',
-                'par_number' => 'PAR-2026-11-0004',
                 'par_issued_to' => 'Social Marketing Officer',
-                'sub_par_number' => null,
                 'sub_par_issued_to' => null,
                 'specifications' => ['connector' => 'HDMI'],
             ],

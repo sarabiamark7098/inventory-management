@@ -6,6 +6,7 @@ use App\Domain\Role;
 use App\Models\BorrowingTransaction;
 use App\Models\Category;
 use App\Models\Equipment;
+use App\Models\Office;
 use App\Models\SyncChange;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -18,6 +19,10 @@ class SyncTest extends TestCase
     use RefreshDatabase;
 
     private string $categoryId;
+
+    private string $divisionId;
+
+    private string $sectionId;
 
     private string $equipmentId;
 
@@ -33,6 +38,17 @@ class SyncTest extends TestCase
             'role' => Role::MANAGER,
             'is_active' => true,
         ]), 'sanctum');
+
+        $this->divisionId = (string) Str::uuid();
+        Office::create(['id' => $this->divisionId, 'code' => 'TEST-DIV', 'name' => 'Test Division']);
+
+        $this->sectionId = (string) Str::uuid();
+        Office::create([
+            'id' => $this->sectionId,
+            'code' => 'TEST-SEC',
+            'name' => 'Test Section',
+            'division_id' => $this->divisionId,
+        ]);
 
         $this->categoryId = (string) Str::uuid();
         Category::create([
@@ -218,12 +234,10 @@ class SyncTest extends TestCase
             'dateAcquired' => '2026-03-15',
             'modelName' => 'ThinkPad T14',
             'specifications' => [],
-            'section' => 'Information and Communications Technology Section',
-            'division' => 'Administrative Division',
+            'divisionId' => $this->divisionId,
+            'sectionId' => $this->sectionId,
             'province' => 'Davao del Sur',
-            'parNumber' => 'PAR-2026-11-0099',
             'parIssuedTo' => 'Mark Rezzel T. Sarabia',
-            'subParNumber' => null,
             'subParIssuedTo' => null,
             'updatedAt' => $this->at('+1 hour'),
         ], $overrides);
@@ -234,46 +248,30 @@ class SyncTest extends TestCase
         $id = (string) Str::uuid();
 
         $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
-            'subParNumber' => 'SUB-PAR-2026-11-0099A',
             'subParIssuedTo' => 'Ed Michael O. Flete',
         ]))])
             ->assertOk()
             ->assertJsonPath('results.0.status', 'APPLIED')
-            ->assertJsonPath('results.0.document.section', 'Information and Communications Technology Section')
-            ->assertJsonPath('results.0.document.division', 'Administrative Division')
+            ->assertJsonPath('results.0.document.divisionId', $this->divisionId)
+            ->assertJsonPath('results.0.document.sectionId', $this->sectionId)
             ->assertJsonPath('results.0.document.province', 'Davao del Sur')
             ->assertJsonPath('results.0.document.propertyNumber', '2026-11-NEW-0001')
             ->assertJsonPath('results.0.document.dateAcquired', '2026-03-15')
-            ->assertJsonPath('results.0.document.parNumber', 'PAR-2026-11-0099')
             ->assertJsonPath('results.0.document.parIssuedTo', 'Mark Rezzel T. Sarabia')
-            ->assertJsonPath('results.0.document.subParNumber', 'SUB-PAR-2026-11-0099A')
             ->assertJsonPath('results.0.document.subParIssuedTo', 'Ed Michael O. Flete');
 
         $this->assertDatabaseHas('equipment', [
             'id' => $id,
             'province' => 'Davao del Sur',
-            'par_number' => 'PAR-2026-11-0099',
             'par_issued_to' => 'Mark Rezzel T. Sarabia',
-            'sub_par_number' => 'SUB-PAR-2026-11-0099A',
             'sub_par_issued_to' => 'Ed Michael O. Flete',
         ]);
 
         // And it must come back down on the next pull.
         $pulled = collect($this->getJson('/api/sync/pull')->json('equipment'))
             ->firstWhere('id', $id);
-        $this->assertSame('PAR-2026-11-0099', $pulled['parNumber']);
-    }
-
-    public function test_new_equipment_without_a_par_number_is_rejected(): void
-    {
-        $id = (string) Str::uuid();
-
-        $this->push([$this->change('equipment', 'INSERT', $id,
-            $this->equipmentPayload($id, ['parNumber' => null]))])
-            ->assertOk()
-            ->assertJsonPath('results.0.status', 'REJECTED');
-
-        $this->assertDatabaseMissing('equipment', ['id' => $id]);
+        $this->assertSame($this->divisionId, $pulled['divisionId']);
+        $this->assertSame($this->sectionId, $pulled['sectionId']);
     }
 
     public function test_new_equipment_without_a_par_holder_name_is_rejected(): void
@@ -374,27 +372,6 @@ class SyncTest extends TestCase
         $this->assertSame('2026-03-15', $row->date_acquired->toDateString());
     }
 
-    public function test_a_blank_par_number_counts_as_missing(): void
-    {
-        $id = (string) Str::uuid();
-
-        $this->push([$this->change('equipment', 'INSERT', $id,
-            $this->equipmentPayload($id, ['parNumber' => '   ']))])
-            ->assertOk()
-            ->assertJsonPath('results.0.status', 'REJECTED');
-    }
-
-    public function test_the_sub_par_number_stays_optional(): void
-    {
-        $id = (string) Str::uuid();
-
-        $this->push([$this->change('equipment', 'INSERT', $id,
-            $this->equipmentPayload($id, ['subParNumber' => null]))])
-            ->assertOk()
-            ->assertJsonPath('results.0.status', 'APPLIED')
-            ->assertJsonPath('results.0.document.subParNumber', null);
-    }
-
     public function test_equipment_registered_before_the_policy_stays_editable(): void
     {
         // A legacy row with no PAR must not become unsyncable, or the number
@@ -412,27 +389,13 @@ class SyncTest extends TestCase
             'assetTag' => 'ICT-LEGACY-0001',
             'modelName' => 'Old Asset',
             'specifications' => [],
-            'parNumber' => 'PAR-2026-11-0100',
+            'parIssuedTo' => 'Juan D. Dela Cruz',
             'province' => 'Davao de Oro',
             'updatedAt' => $this->at('+1 hour'),
         ])])
             ->assertOk()
             ->assertJsonPath('results.0.status', 'APPLIED')
-            ->assertJsonPath('results.0.document.parNumber', 'PAR-2026-11-0100');
-    }
-
-    public function test_an_update_cannot_blank_out_an_existing_par_number(): void
-    {
-        $id = (string) Str::uuid();
-        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id))]);
-
-        $this->push([$this->change('equipment', 'UPDATE', $id, $this->equipmentPayload($id, [
-            'parNumber' => null,
-            'updatedAt' => $this->at('+2 hours'),
-        ]))])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
-
-        // The accountable document survives an incomplete client payload.
-        $this->assertSame('PAR-2026-11-0099', Equipment::find($id)->par_number);
+            ->assertJsonPath('results.0.document.parIssuedTo', 'Juan D. Dela Cruz');
     }
 
     public function test_duplicate_asset_tag_is_rejected_rather_than_silently_dropped(): void
@@ -450,6 +413,279 @@ class SyncTest extends TestCase
             ->assertJsonPath('results.0.status', 'REJECTED');
 
         $this->assertDatabaseMissing('equipment', ['id' => $other]);
+    }
+
+    /* ------------------------------ offices ------------------------------ */
+
+    public function test_an_office_without_a_division_is_a_division(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('offices', 'INSERT', $id, [
+            'id' => $id,
+            'code' => 'XI-FO-AD',
+            'name' => 'FO Administrative Division',
+            'divisionId' => null,
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.isDivision', true);
+
+        $this->assertTrue(Office::find($id)->isDivision());
+    }
+
+    public function test_an_office_with_a_division_is_a_section(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('offices', 'INSERT', $id, [
+            'id' => $id,
+            'code' => 'XI-FO-AD-GSS',
+            'name' => 'FO General Service Section',
+            'divisionId' => $this->divisionId,
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.isDivision', false)
+            ->assertJsonPath('results.0.document.divisionId', $this->divisionId);
+    }
+
+    public function test_a_section_cannot_belong_to_another_section(): void
+    {
+        $id = (string) Str::uuid();
+
+        // The register is two levels; a section of a section has no meaning.
+        $this->push([$this->change('offices', 'INSERT', $id, [
+            'id' => $id,
+            'code' => 'XI-DEEP',
+            'name' => 'Too deep',
+            'divisionId' => $this->sectionId,
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('offices', ['id' => $id]);
+    }
+
+    public function test_an_office_cannot_be_its_own_division(): void
+    {
+        $this->push([$this->change('offices', 'UPDATE', $this->divisionId, [
+            'id' => $this->divisionId,
+            'code' => 'TEST-DIV',
+            'name' => 'Test Division',
+            'divisionId' => $this->divisionId,
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+    }
+
+    public function test_office_codes_are_unique(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('offices', 'INSERT', $id, [
+            'id' => $id,
+            'code' => 'TEST-DIV',
+            'name' => 'Impostor',
+            'divisionId' => null,
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('offices', ['id' => $id]);
+    }
+
+    public function test_a_division_with_sections_cannot_become_a_section(): void
+    {
+        // Demoting it would orphan every section beneath it.
+        $this->push([$this->change('offices', 'UPDATE', $this->divisionId, [
+            'id' => $this->divisionId,
+            'code' => 'TEST-DIV',
+            'name' => 'Test Division',
+            'divisionId' => (string) Str::uuid(),
+            'updatedAt' => $this->at('+1 hour'),
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+    }
+
+    public function test_an_office_still_holding_assets_cannot_be_deleted(): void
+    {
+        $id = (string) Str::uuid();
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id))])
+            ->assertJsonPath('results.0.status', 'APPLIED');
+
+        $now = $this->at('+2 hours');
+        $this->push([$this->change('offices', 'DELETE', $this->sectionId, [
+            'id' => $this->sectionId, 'deletedAt' => $now, 'updatedAt' => $now,
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertNull(Office::find($this->sectionId)->deleted_at);
+    }
+
+    public function test_a_division_with_sections_cannot_be_deleted(): void
+    {
+        $now = $this->at('+1 hour');
+
+        $this->push([$this->change('offices', 'DELETE', $this->divisionId, [
+            'id' => $this->divisionId, 'deletedAt' => $now, 'updatedAt' => $now,
+        ])])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+    }
+
+    public function test_offices_are_included_in_the_pull(): void
+    {
+        $offices = $this->getJson('/api/sync/pull')->assertOk()->json('offices');
+
+        $this->assertCount(2, $offices);
+        $this->assertContains(true, array_column($offices, 'isDivision'));
+        $this->assertContains(false, array_column($offices, 'isDivision'));
+    }
+
+    /* ------------------------- office on equipment ------------------------ */
+
+    public function test_new_equipment_without_a_division_is_rejected(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['divisionId' => null]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('equipment', ['id' => $id]);
+    }
+
+    public function test_the_section_is_optional(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['sectionId' => null]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.sectionId', null)
+            ->assertJsonPath('results.0.document.divisionId', $this->divisionId);
+    }
+
+    public function test_a_section_from_a_different_division_is_rejected(): void
+    {
+        $otherDivision = Office::create([
+            'id' => (string) Str::uuid(), 'code' => 'OTHER-DIV', 'name' => 'Other Division',
+        ]);
+        $id = (string) Str::uuid();
+
+        // The section belongs to Test Division, not Other Division.
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'divisionId' => $otherDivision->id,
+        ]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'REJECTED');
+
+        $this->assertDatabaseMissing('equipment', ['id' => $id]);
+    }
+
+    public function test_a_division_cannot_be_passed_as_a_section(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id, [
+            'sectionId' => $this->divisionId,
+        ]))])
+            ->assertOk()
+            // The division-level office is not a valid section, so it resolves
+            // to null rather than being filed as one.
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.sectionId', null);
+    }
+
+    public function test_an_update_cannot_blank_out_the_division(): void
+    {
+        $id = (string) Str::uuid();
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id))]);
+
+        $this->push([$this->change('equipment', 'UPDATE', $id, $this->equipmentPayload($id, [
+            'divisionId' => null,
+            'updatedAt' => $this->at('+2 hours'),
+        ]))])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
+
+        $this->assertSame($this->divisionId, Equipment::find($id)->division_id);
+    }
+
+    /* ------------------------------ remarks ------------------------------ */
+
+    public function test_remarks_round_trip_through_sync(): void
+    {
+        $id = (string) Str::uuid();
+        $note = "Screen flickers under load. Swapped the cable 2026-03-02; monitor still suspect.";
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['remarks' => $note]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.remarks', $note);
+
+        $this->assertSame($note, Equipment::find($id)->remarks);
+
+        // And it must come back down on the next pull.
+        $pulled = collect($this->getJson('/api/sync/pull')->json('equipment'))
+            ->firstWhere('id', $id);
+        $this->assertSame($note, $pulled['remarks']);
+    }
+
+    public function test_remarks_are_optional(): void
+    {
+        $id = (string) Str::uuid();
+
+        $this->push([$this->change('equipment', 'INSERT', $id, $this->equipmentPayload($id))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED')
+            ->assertJsonPath('results.0.document.remarks', null);
+    }
+
+    public function test_remarks_survive_text_longer_than_a_varchar(): void
+    {
+        $id = (string) Str::uuid();
+        // A TEXT column, not VARCHAR(255): a maintenance history outgrows 255
+        // characters quickly, and truncation would lose the newest entry.
+        $long = str_repeat('Returned from repair; battery replaced. ', 30);
+
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['remarks' => $long]))])
+            ->assertOk()
+            ->assertJsonPath('results.0.status', 'APPLIED');
+
+        $this->assertSame(trim($long), Equipment::find($id)->remarks);
+        $this->assertGreaterThan(255, strlen(Equipment::find($id)->remarks));
+    }
+
+    public function test_remarks_can_be_edited_and_cleared_deliberately(): void
+    {
+        $id = (string) Str::uuid();
+        $this->push([$this->change('equipment', 'INSERT', $id,
+            $this->equipmentPayload($id, ['remarks' => 'First note']))]);
+
+        $this->push([$this->change('equipment', 'UPDATE', $id, $this->equipmentPayload($id, [
+            'remarks' => 'Replaces the first note',
+            'updatedAt' => $this->at('+2 hours'),
+        ]))])->assertOk()->assertJsonPath('results.0.document.remarks', 'Replaces the first note');
+
+        // Blanking the field in the form is a real edit, so it must stick —
+        // unlike the PAR fields, which an incomplete payload must never erase.
+        $this->push([$this->change('equipment', 'UPDATE', $id, $this->equipmentPayload($id, [
+            'remarks' => '',
+            'updatedAt' => $this->at('+3 hours'),
+        ]))])->assertOk();
+
+        $this->assertNull(Equipment::find($id)->remarks);
     }
 
     /* ------------------ deployment + multi-part serials ------------------ */

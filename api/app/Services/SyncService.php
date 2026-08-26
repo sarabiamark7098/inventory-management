@@ -7,6 +7,7 @@ use App\Domain\LoanCalculator;
 use App\Models\BorrowingTransaction;
 use App\Models\Category;
 use App\Models\Equipment;
+use App\Models\Office;
 use App\Models\SyncChange;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Carbon;
@@ -74,6 +75,8 @@ class SyncService
 
         return [
             'serverTime' => $serverTime,
+            'offices' => $scope(Office::query()->orderBy('updated_at'))
+                ->get()->map->toSyncArray()->all(),
             'categories' => $scope(Category::query()->orderBy('updated_at'))
                 ->get()->map->toSyncArray()->all(),
             'equipment' => $scope(Equipment::query()->orderBy('updated_at'))
@@ -91,6 +94,7 @@ class SyncService
     {
         return DB::transaction(function () use ($change, $clientId) {
             $result = match ($change['table']) {
+                'offices' => $this->applyOffice($change),
                 'categories' => $this->applyCategory($change),
                 'equipment' => $this->applyEquipment($change),
                 'borrowings' => $this->applyBorrowing($change),
@@ -125,6 +129,135 @@ class SyncService
     {
         return $this->date($change['payload']['updatedAt'] ?? null)
             ?? Carbon::parse($change['clientTimestamp']);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Offices                                                             */
+    /* ------------------------------------------------------------------ */
+
+    protected function applyOffice(array $change): array
+    {
+        $payload = $change['payload'];
+        $existing = Office::find($change['docId']);
+        $updatedAt = $this->payloadUpdatedAt($change);
+
+        if ($existing && $this->isStale($updatedAt, $existing->updated_at)) {
+            return $this->verdict($change, 'IGNORED_STALE', $existing->toSyncArray());
+        }
+
+        if ($change['action'] === 'DELETE') {
+            if (! $existing) {
+                return $this->verdict($change, 'APPLIED', null);
+            }
+
+            // An office still in use must not disappear underneath the records
+            // that point at it, or a report loses its office silently.
+            $sections = Office::where('division_id', $existing->id)->whereNull('deleted_at')->count();
+            $assets = Equipment::where('division_id', $existing->id)
+                ->orWhere('section_id', $existing->id)
+                ->whereNull('deleted_at')
+                ->count();
+
+            if ($sections > 0 || $assets > 0) {
+                $why = $sections > 0
+                    ? "{$sections} section(s) still belong to it"
+                    : "{$assets} asset(s) are still assigned to it";
+
+                return [
+                    'changeId' => $change['id'],
+                    'table' => 'offices',
+                    'docId' => $change['docId'],
+                    'status' => 'REJECTED',
+                    'message' => "{$existing->name} cannot be removed: {$why}.",
+                    'document' => $existing->toSyncArray(),
+                ];
+            }
+
+            $existing->forceFill([
+                'deleted_at' => $this->date($payload['deletedAt'] ?? null) ?? now(),
+                'updated_at' => $updatedAt,
+            ])->save();
+
+            return $this->verdict($change, 'APPLIED', $existing->fresh()->toSyncArray());
+        }
+
+        $code = $this->str($payload['code'] ?? null) ?? $existing?->code;
+        if ($code === null) {
+            return [
+                'changeId' => $change['id'],
+                'table' => 'offices',
+                'docId' => $change['docId'],
+                'status' => 'REJECTED',
+                'message' => 'An office needs a code.',
+            ];
+        }
+
+        $codeOwner = Office::where('code', $code)->whereKeyNot($change['docId'])->first();
+        if ($codeOwner) {
+            return [
+                'changeId' => $change['id'],
+                'table' => 'offices',
+                'docId' => $change['docId'],
+                'status' => 'REJECTED',
+                'message' => "Office code \"{$code}\" already belongs to {$codeOwner->name}.",
+                'document' => $codeOwner->toSyncArray(),
+            ];
+        }
+
+        $parentId = $this->str($payload['divisionId'] ?? null);
+
+        if ($parentId === $change['docId']) {
+            return [
+                'changeId' => $change['id'],
+                'table' => 'offices',
+                'docId' => $change['docId'],
+                'status' => 'REJECTED',
+                'message' => 'An office cannot be its own division.',
+            ];
+        }
+
+        // Only a division may be a parent: the register is two levels, and a
+        // section of a section has no meaning in the org chart.
+        if ($parentId !== null && ! Office::whereKey($parentId)->whereNull('division_id')->exists()) {
+            return [
+                'changeId' => $change['id'],
+                'table' => 'offices',
+                'docId' => $change['docId'],
+                'status' => 'REJECTED',
+                'message' => 'A section must belong to a division, not to another section.',
+            ];
+        }
+
+        // Demoting a division that still has sections would orphan them.
+        if ($existing && $existing->isDivision() && $parentId !== null) {
+            $sections = Office::where('division_id', $existing->id)->whereNull('deleted_at')->count();
+            if ($sections > 0) {
+                return [
+                    'changeId' => $change['id'],
+                    'table' => 'offices',
+                    'docId' => $change['docId'],
+                    'status' => 'REJECTED',
+                    'message' => "{$existing->name} has {$sections} section(s) and cannot become a section itself.",
+                ];
+            }
+        }
+
+        $attributes = [
+            'code' => $code,
+            'name' => $this->str($payload['name'] ?? null) ?? $existing?->name ?? 'Untitled office',
+            'division_id' => $parentId,
+            'deleted_at' => $this->date($payload['deletedAt'] ?? null),
+            'updated_at' => $updatedAt,
+        ];
+
+        $model = $existing ?? new Office;
+        if (! $existing) {
+            $model->id = $change['docId'];
+            $attributes['created_at'] = $this->date($payload['createdAt'] ?? null) ?? $updatedAt;
+        }
+        $model->forceFill($attributes)->save();
+
+        return $this->verdict($change, 'APPLIED', $model->fresh()->toSyncArray());
     }
 
     /* ------------------------------------------------------------------ */
@@ -224,17 +357,23 @@ class SyncService
          * this policy has to stay editable so the number can be filled in
          * rather than the record becoming unsyncable.
          */
-        $parNumber = $this->str($payload['parNumber'] ?? null);
         $parIssuedTo = $this->str($payload['parIssuedTo'] ?? null);
         $propertyNumber = $this->str($payload['propertyNumber'] ?? null);
         $dateAcquired = $this->date($payload['dateAcquired'] ?? null);
+
+        // Division comes from the office register and is required; section is
+        // optional, because plenty of offices assign at division level.
+        $divisionId = $this->str($payload['divisionId'] ?? null);
+        $sectionId = $this->str($payload['sectionId'] ?? null);
+        $division = $divisionId ? Office::whereKey($divisionId)->whereNull('division_id')->first() : null;
+        $section = $sectionId ? Office::whereKey($sectionId)->whereNotNull('division_id')->first() : null;
 
         if (! $existing) {
             $missing = match (true) {
                 $propertyNumber === null => 'a property number',
                 $dateAcquired === null => 'an acquisition date',
-                $parNumber === null => 'a PAR number',
                 $parIssuedTo === null => 'the name the PAR is issued to',
+                $division === null => 'a division',
                 default => null,
             };
 
@@ -263,6 +402,16 @@ class SyncService
                     'document' => $owner->toSyncArray(),
                 ];
             }
+        }
+
+        if ($section && $division && $section->division_id !== $division->id) {
+            return [
+                'changeId' => $change['id'],
+                'table' => 'equipment',
+                'docId' => $change['docId'],
+                'status' => 'REJECTED',
+                'message' => "{$section->name} is not a section of {$division->name}.",
+            ];
         }
 
         $categoryId = $this->str($payload['categoryId'] ?? null);
@@ -351,18 +500,17 @@ class SyncService
                 $existing?->condition ?? 'GOOD',
             ),
             'location' => $this->str($payload['location'] ?? null),
-            'section' => $this->str($payload['section'] ?? null) ?? $existing?->section,
-            'division' => $this->str($payload['division'] ?? null) ?? $existing?->division,
+            'division_id' => $division?->id ?? $existing?->division_id,
+            'section_id' => $section?->id,
             'province' => $this->str($payload['province'] ?? null) ?? $existing?->province,
-            'par_number' => $parNumber ?? $existing?->par_number,
             'par_issued_to' => $parIssuedTo ?? $existing?->par_issued_to,
-            'sub_par_number' => $this->str($payload['subParNumber'] ?? null),
             'sub_par_issued_to' => $this->str($payload['subParIssuedTo'] ?? null),
             'actual_user' => $this->str($payload['actualUser'] ?? null),
             'position' => $this->str($payload['position'] ?? null),
             'ad_username' => $this->str($payload['adUsername'] ?? null),
             'anydesk_number' => $this->str($payload['anydeskNumber'] ?? null),
             'specifications' => is_array($payload['specifications'] ?? null) ? $payload['specifications'] : [],
+            'remarks' => $this->str($payload['remarks'] ?? null),
             'deleted_at' => $this->date($payload['deletedAt'] ?? null),
             'updated_at' => $updatedAt,
         ];

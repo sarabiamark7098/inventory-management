@@ -16,6 +16,7 @@ import { canBeBorrowed, explainNotBorrowable } from '@/domain/constants'
  * document with an outbox entry — see `db/outbox.js`.
  */
 export const useInventoryStore = defineStore('inventory', () => {
+  const offices = ref([])
   const categories = ref([])
   const equipment = ref([])
   const borrowings = ref([])
@@ -29,6 +30,11 @@ export const useInventoryStore = defineStore('inventory', () => {
     const notDeleted = (row) => row.deletedAt == null
 
     subscriptions = [
+      liveQuery(() => db.offices.filter(notDeleted).toArray()).subscribe({
+        next: (rows) => {
+          offices.value = rows.sort((a, b) => a.name.localeCompare(b.name))
+        },
+      }),
       liveQuery(() => db.categories.filter(notDeleted).toArray()).subscribe({
         next: (rows) => {
           categories.value = rows.sort((a, b) => a.name.localeCompare(b.name))
@@ -66,6 +72,23 @@ export const useInventoryStore = defineStore('inventory', () => {
   }
 
   /* --------------------------- derived state -------------------------- */
+
+  const officeById = computed(() => new Map(offices.value.map((o) => [o.id, o])))
+
+  /** `divisionId` null means the office IS a division. */
+  const divisions = computed(() => offices.value.filter((o) => !o.divisionId))
+
+  const sectionsByDivision = computed(() => {
+    const map = new Map()
+    for (const office of offices.value) {
+      if (!office.divisionId) continue
+      if (!map.has(office.divisionId)) map.set(office.divisionId, [])
+      map.get(office.divisionId).push(office)
+    }
+    return map
+  })
+
+  const officeLabel = (id) => officeById.value.get(id)?.name ?? null
 
   const categoryById = computed(() => new Map(categories.value.map((c) => [c.id, c])))
   const equipmentById = computed(() => new Map(equipment.value.map((e) => [e.id, e])))
@@ -119,6 +142,108 @@ export const useInventoryStore = defineStore('inventory', () => {
         throw new Error(`Serial number "${serial}" is already used by ${clash.assetTag}.`)
       }
     }
+  }
+
+  /* ------------------------------ offices ----------------------------- */
+
+  async function createOffice(input) {
+    const code = input.code?.trim().toUpperCase()
+    if (!code) throw new Error('An office code is required.')
+    if (!input.name?.trim()) throw new Error('An office name is required.')
+
+    const clash = await db.offices
+      .where('code')
+      .equals(code)
+      .filter((row) => row.deletedAt == null)
+      .first()
+    if (clash) throw new Error(`Office code "${code}" is already used by ${clash.name}.`)
+
+    const ts = nowIso()
+    const doc = persistable({
+      id: uuid(),
+      code,
+      name: input.name.trim(),
+      // Null means this office is itself a division.
+      divisionId: input.divisionId || null,
+      createdAt: ts,
+      updatedAt: ts,
+      deletedAt: null,
+    })
+    await db.transaction('rw', [db.offices, db.sync_queue], async () => {
+      await db.offices.add(doc)
+      await enqueue({ table: 'offices', action: 'INSERT', docId: doc.id, payload: doc })
+    })
+    return doc
+  }
+
+  async function updateOffice(id, patch) {
+    const current = await db.offices.get(id)
+    if (!current) throw new Error('Office not found.')
+
+    if (patch.divisionId === id) throw new Error('An office cannot be its own division.')
+
+    // Demoting a division that still has sections would orphan them.
+    if (!current.divisionId && patch.divisionId) {
+      const sections = (sectionsByDivision.value.get(id) ?? []).length
+      if (sections > 0) {
+        throw new Error(
+          `${current.name} has ${sections} section${sections === 1 ? '' : 's'} and cannot become a section itself.`,
+        )
+      }
+    }
+
+    const code = (patch.code ?? current.code).trim().toUpperCase()
+    const clash = await db.offices
+      .where('code')
+      .equals(code)
+      .filter((row) => row.deletedAt == null && row.id !== id)
+      .first()
+    if (clash) throw new Error(`Office code "${code}" is already used by ${clash.name}.`)
+
+    const doc = persistable({
+      ...current,
+      code,
+      ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+      ...(patch.divisionId !== undefined ? { divisionId: patch.divisionId || null } : {}),
+      updatedAt: nowIso(),
+    })
+    await db.transaction('rw', [db.offices, db.sync_queue], async () => {
+      await db.offices.put(doc)
+      await enqueue({ table: 'offices', action: 'UPDATE', docId: id, payload: doc })
+    })
+  }
+
+  async function deleteOffice(id) {
+    const current = await db.offices.get(id)
+    if (!current) return
+
+    // Refuse here rather than letting it come back REJECTED after a sync.
+    const sections = (sectionsByDivision.value.get(id) ?? []).length
+    if (sections > 0) {
+      throw new Error(
+        `${current.name} still has ${sections} section${sections === 1 ? '' : 's'}.`,
+      )
+    }
+    const assets = equipment.value.filter(
+      (e) => e.divisionId === id || e.sectionId === id,
+    ).length
+    if (assets > 0) {
+      throw new Error(
+        `${current.name} still has ${assets} asset${assets === 1 ? '' : 's'} assigned to it.`,
+      )
+    }
+
+    const ts = nowIso()
+    const doc = persistable({ ...current, deletedAt: ts, updatedAt: ts })
+    await db.transaction('rw', [db.offices, db.sync_queue], async () => {
+      await db.offices.put(doc)
+      await enqueue({
+        table: 'offices',
+        action: 'DELETE',
+        docId: id,
+        payload: { id, deletedAt: ts, updatedAt: ts },
+      })
+    })
   }
 
   /* ----------------------------- categories --------------------------- */
@@ -198,12 +323,19 @@ export const useInventoryStore = defineStore('inventory', () => {
 
     // Government accountability: refuse here rather than letting the asset sit
     // in the outbox and come back REJECTED long after the operator moved on.
-    const parNumber = input.parNumber?.trim() || null
-    if (!parNumber) throw new Error('A PAR number is required to register equipment.')
-
-    // A number with nobody named on it does not establish accountability.
     const parIssuedTo = input.parIssuedTo?.trim() || null
     if (!parIssuedTo) throw new Error('The PAR must name the officer it is issued to.')
+
+    const divisionId = input.divisionId || null
+    if (!divisionId) throw new Error('A division is required to register equipment.')
+
+    const sectionId = input.sectionId || null
+    if (sectionId) {
+      const section = await db.offices.get(sectionId)
+      if (section && section.divisionId !== divisionId) {
+        throw new Error(`${section.name} is not a section of the selected division.`)
+      }
+    }
 
     const propertyNumber = input.propertyNumber?.trim() || null
     if (!propertyNumber) throw new Error('A property number is required to register equipment.')
@@ -246,18 +378,17 @@ export const useInventoryStore = defineStore('inventory', () => {
       status: input.status ?? 'AVAILABLE',
       condition: input.condition ?? 'GOOD',
       location: input.location?.trim() || null,
-      section: input.section?.trim() || null,
-      division: input.division?.trim() || null,
+      divisionId: input.divisionId,
+      sectionId: input.sectionId || null,
       province: input.province?.trim() || null,
-      parNumber,
       parIssuedTo,
-      subParNumber: input.subParNumber?.trim() || null,
       subParIssuedTo: input.subParIssuedTo?.trim() || null,
       actualUser: input.actualUser?.trim() || null,
       position: input.position?.trim() || null,
       adUsername: input.adUsername?.trim() || null,
       anydeskNumber: input.anydeskNumber?.trim() || null,
       specifications: input.specifications ?? {},
+      remarks: input.remarks?.trim() || null,
       createdAt: ts,
       updatedAt: ts,
       deletedAt: null,
@@ -289,11 +420,10 @@ export const useInventoryStore = defineStore('inventory', () => {
       'division',
       'province',
       'propertyNumber',
-      'parNumber',
       'parIssuedTo',
-      'subParNumber',
       'subParIssuedTo',
       'monitorSerialNumber',
+      'remarks',
       'actualUser',
       'position',
       'adUsername',
@@ -308,8 +438,8 @@ export const useInventoryStore = defineStore('inventory', () => {
     }
     await assertSerialsAreFree([doc.serialNumber, doc.monitorSerialNumber], id)
 
-    if (current.parNumber && !doc.parNumber) doc.parNumber = current.parNumber
     if (current.parIssuedTo && !doc.parIssuedTo) doc.parIssuedTo = current.parIssuedTo
+    if (current.divisionId && !doc.divisionId) doc.divisionId = current.divisionId
     if (current.propertyNumber && !doc.propertyNumber) doc.propertyNumber = current.propertyNumber
     if (current.dateAcquired && !doc.dateAcquired) doc.dateAcquired = current.dateAcquired
 
@@ -498,6 +628,14 @@ export const useInventoryStore = defineStore('inventory', () => {
   }
 
   return {
+    offices,
+    officeById,
+    officeLabel,
+    divisions,
+    sectionsByDivision,
+    createOffice,
+    updateOffice,
+    deleteOffice,
     categories,
     equipment,
     borrowings,

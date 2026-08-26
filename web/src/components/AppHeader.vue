@@ -21,6 +21,7 @@ const links = computed(() =>
     { to: '/', label: 'Dashboard', icon: 'pi pi-home' },
     { to: '/equipment', label: 'Equipment', icon: 'pi pi-desktop' },
     { to: '/categories', label: 'Categories', icon: 'pi pi-tags' },
+    { to: '/offices', label: 'Offices', icon: 'pi pi-sitemap' },
     { to: '/borrowing', label: 'Borrowing', icon: 'pi pi-arrow-right-arrow-left' },
     // Account management is admin-only; hide what the API would refuse anyway.
     ...(auth.isAdmin ? [{ to: '/accounts', label: 'Accounts', icon: 'pi pi-users' }] : []),

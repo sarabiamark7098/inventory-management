@@ -39,6 +39,7 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     });
 
     // Readable by every signed-in role, including borrowers browsing the catalogue.
+    Route::get('/offices', [InventoryController::class, 'offices']);
     Route::get('/categories', [InventoryController::class, 'categories']);
     Route::get('/equipment', [InventoryController::class, 'equipment']);
     Route::get('/borrowings', [InventoryController::class, 'borrowings']);
@@ -49,11 +50,11 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     Route::middleware('role:'.Role::ADMIN.','.Role::MANAGER)->group(function () {
         Route::post('/sync/push', [SyncController::class, 'push']);
         Route::post('/{table}', [InventoryController::class, 'store'])
-            ->whereIn('table', ['categories', 'equipment', 'borrowings']);
+            ->whereIn('table', ['offices', 'categories', 'equipment', 'borrowings']);
         Route::put('/{table}/{id}', [InventoryController::class, 'update'])
-            ->whereIn('table', ['categories', 'equipment', 'borrowings']);
+            ->whereIn('table', ['offices', 'categories', 'equipment', 'borrowings']);
         Route::delete('/{table}/{id}', [InventoryController::class, 'destroy'])
-            ->whereIn('table', ['categories', 'equipment', 'borrowings']);
+            ->whereIn('table', ['offices', 'categories', 'equipment', 'borrowings']);
     });
 
     // Account management is admin-only.

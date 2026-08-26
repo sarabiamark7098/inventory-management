@@ -34,6 +34,16 @@ class Equipment extends Model
         return $this->belongsTo(Category::class);
     }
 
+    public function divisionOffice(): BelongsTo
+    {
+        return $this->belongsTo(Office::class, 'division_id');
+    }
+
+    public function sectionOffice(): BelongsTo
+    {
+        return $this->belongsTo(Office::class, 'section_id');
+    }
+
     public function transactions(): HasMany
     {
         return $this->hasMany(BorrowingTransaction::class);
@@ -54,18 +64,17 @@ class Equipment extends Model
             'status' => $this->status,
             'condition' => $this->condition,
             'location' => $this->location,
-            'section' => $this->section,
-            'division' => $this->division,
+            'divisionId' => $this->division_id,
+            'sectionId' => $this->section_id,
             'province' => $this->province,
-            'parNumber' => $this->par_number,
             'parIssuedTo' => $this->par_issued_to,
-            'subParNumber' => $this->sub_par_number,
             'subParIssuedTo' => $this->sub_par_issued_to,
             'actualUser' => $this->actual_user,
             'position' => $this->position,
             'adUsername' => $this->ad_username,
             'anydeskNumber' => $this->anydesk_number,
             'specifications' => is_array($this->specifications) ? $this->specifications : [],
+            'remarks' => $this->remarks,
             'createdAt' => $this->created_at?->toIso8601ZuluString('millisecond'),
             'updatedAt' => $this->updated_at?->toIso8601ZuluString('millisecond'),
             'deletedAt' => $this->deleted_at?->toIso8601ZuluString('millisecond'),

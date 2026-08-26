@@ -34,6 +34,14 @@ db.version(3).stores({
 
 // v4 adds the monitor serial (desktops are one asset with two serialised parts)
 // and the deployment details support staff search by.
+// v5 adds the office register (divisions and their sections) and swaps the
+// free-text division/section on equipment for references into it.
+db.version(5).stores({
+  offices: 'id, code, name, divisionId, updatedAt, deletedAt',
+  equipment:
+    'id, assetTag, propertyNumber, dateAcquired, serialNumber, monitorSerialNumber, categoryId, status, divisionId, sectionId, parIssuedTo, province, actualUser, adUsername, anydeskNumber, updatedAt, deletedAt',
+})
+
 db.version(4).stores({
   equipment:
     'id, assetTag, propertyNumber, dateAcquired, serialNumber, monitorSerialNumber, categoryId, status, parNumber, parIssuedTo, subParNumber, subParIssuedTo, province, division, section, actualUser, adUsername, anydeskNumber, updatedAt, deletedAt',
@@ -56,9 +64,10 @@ export async function setMeta(key, value) {
 export async function resetLocal() {
   await db.transaction(
     'rw',
-    [db.categories, db.equipment, db.borrowings, db.sync_queue, db.meta],
+    [db.offices, db.categories, db.equipment, db.borrowings, db.sync_queue, db.meta],
     async () => {
       await Promise.all([
+        db.offices.clear(),
         db.categories.clear(),
         db.equipment.clear(),
         db.borrowings.clear(),

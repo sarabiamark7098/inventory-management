@@ -17,7 +17,7 @@ class SyncPushRequest extends FormRequest
             'clientId' => ['required', 'string', 'max:100'],
             'changes' => ['present', 'array', 'max:500'],
             'changes.*.id' => ['required', 'string', 'max:100'],
-            'changes.*.table' => ['required', 'string', 'in:categories,equipment,borrowings'],
+            'changes.*.table' => ['required', 'string', 'in:offices,categories,equipment,borrowings'],
             'changes.*.action' => ['required', 'string', 'in:INSERT,UPDATE,DELETE'],
             'changes.*.docId' => ['required', 'string', 'uuid'],
             'changes.*.payload' => ['present', 'array'],
@@ -28,7 +28,7 @@ class SyncPushRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'changes.*.table.in' => 'changes.:index.table must be categories, equipment, or borrowings.',
+            'changes.*.table.in' => 'changes.:index.table must be offices, categories, equipment, or borrowings.',
             'changes.*.docId.uuid' => 'changes.:index.docId must be a UUID.',
             'changes.max' => 'Too many changes in one push (max 500).',
         ];
