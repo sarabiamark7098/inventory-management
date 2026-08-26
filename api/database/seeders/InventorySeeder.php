@@ -24,14 +24,6 @@ class InventorySeeder extends Seeder
 
     public function run(): void
     {
-        // Resolved by code: the office register is the source of truth for the
-        // org chart, and codes are its stable business key.
-        $office = fn (string $code) => \App\Models\Office::where('code', $code)->value('id');
-        $ict = $office('XI-FO-PPD-ICT');
-        $smu = $office('XI-FO-SMU');
-        $ppd = $office('XI-FO-PPD');
-        $ord = $office('XI-FO-ORD');
-
         $categories = [
             [
                 'id' => self::CAT_LAPTOPS,
@@ -83,111 +75,9 @@ class InventorySeeder extends Seeder
             Category::updateOrCreate(['id' => $category['id']], $category);
         }
 
-        $equipment = [
-            [
-                'id' => '0f2a1c34-2222-4a22-8a22-000000000001',
-                'asset_tag' => 'ICT-LT-0001',
-                'property_number' => '2026-11-LT-0001',
-                'date_acquired' => '2026-02-14',
-                'serial_number' => 'PF3ZK9QA',
-                'category_id' => self::CAT_LAPTOPS,
-                'model_name' => 'ThinkPad T14 Gen 4',
-                'brand' => 'Lenovo',
-                'location' => 'ICT Storeroom / Shelf A',
-                'division_id' => $ppd,
-                'section_id' => $ict,
-                'province' => 'Davao del Sur',
-                'par_issued_to' => 'Mark Rezzel T. Sarabia',
-                'sub_par_issued_to' => null,
-                'actual_user' => 'Mark Rezzel T. Sarabia',
-                'position' => 'Information Technology Officer II',
-                'ad_username' => 'mrtsarabia',
-                'anydesk_number' => '9 876 543 210',
-                'specifications' => ['processor' => 'Intel Core i5-1335U', 'ram' => '16GB', 'storage_gb' => 512],
-            ],
-            [
-                'id' => '0f2a1c34-2222-4a22-8a22-000000000002',
-                'asset_tag' => 'ICT-LT-0002',
-                'property_number' => '2026-11-LT-0002',
-                'date_acquired' => '2026-02-14',
-                'serial_number' => 'PF3ZK9QB',
-                'category_id' => self::CAT_LAPTOPS,
-                'model_name' => 'Latitude 5440',
-                'brand' => 'Dell',
-                'location' => 'ICT Storeroom / Shelf A',
-                'division_id' => $ppd,
-                'section_id' => $ict,
-                'province' => 'Davao del Sur',
-                'par_issued_to' => 'Mark Rezzel T. Sarabia',
-                'sub_par_issued_to' => 'Ed Michael O. Flete',
-                'specifications' => ['processor' => 'Intel Core i7-1355U', 'ram' => '32GB', 'storage_gb' => 1024],
-            ],
-            [
-                'id' => '0f2a1c34-2222-4a22-8a22-000000000003',
-                'asset_tag' => 'ICT-NW-0001',
-                'property_number' => '2025-11-NW-0001',
-                'date_acquired' => '2025-09-30',
-                'serial_number' => 'FGL2249L0AB',
-                'category_id' => self::CAT_NETWORKING,
-                'model_name' => 'Catalyst 2960-X',
-                'brand' => 'Cisco',
-                'location' => 'Server Room / Rack B',
-                'division_id' => $ppd,
-                'section_id' => $ict,
-                'province' => 'Davao del Norte',
-                'par_issued_to' => 'ICT Section Head',
-                'sub_par_issued_to' => null,
-                'specifications' => ['mac_address' => '00:1A:2B:3C:4D:5E', 'ports' => 24, 'poe' => true],
-            ],
-            [
-                'id' => '0f2a1c34-2222-4a22-8a22-000000000005',
-                'asset_tag' => 'ICT-DT-0001',
-                'property_number' => '2026-11-DT-0001',
-                'date_acquired' => '2026-01-20',
-                'serial_number' => 'MXL3421ABC',
-                'monitor_serial_number' => 'CNC4210XYZ',
-                'category_id' => self::CAT_DESKTOPS,
-                'model_name' => 'OptiPlex 7010 + P2422H',
-                'brand' => 'Dell',
-                'location' => 'ICT Office / Workstation 3',
-                'division_id' => $ppd,
-                'section_id' => $ict,
-                'province' => 'Davao del Sur',
-                'par_issued_to' => 'Mark Rezzel T. Sarabia',
-                'sub_par_issued_to' => null,
-                'actual_user' => 'Ed Michael O. Flete',
-                'position' => 'Information Technology Officer I',
-                'ad_username' => 'eoflete',
-                'anydesk_number' => '1 234 567 890',
-                'specifications' => ['processor' => 'Intel Core i5-13500', 'ram' => '16GB', 'monitor_size' => '24 inch'],
-            ],
-            [
-                'id' => '0f2a1c34-2222-4a22-8a22-000000000004',
-                'asset_tag' => 'ICT-PR-0001',
-                'property_number' => '2024-11-PR-0001',
-                'date_acquired' => '2024-06-05',
-                'serial_number' => null,
-                'category_id' => self::CAT_PERIPHERALS,
-                'model_name' => 'EB-X51 Projector',
-                'brand' => 'Epson',
-                'location' => 'Media Room',
-                'division_id' => $ord,
-                'section_id' => $smu,
-                'province' => 'Davao Oriental',
-                'par_issued_to' => 'Social Marketing Officer',
-                'sub_par_issued_to' => null,
-                'specifications' => ['connector' => 'HDMI'],
-            ],
-        ];
-
-        foreach ($equipment as $item) {
-            Equipment::updateOrCreate(['id' => $item['id']], $item);
-        }
-
         $this->command?->info(sprintf(
             'Seeded %d categories and %d equipment items.',
             count($categories),
-            count($equipment),
         ));
     }
 }
