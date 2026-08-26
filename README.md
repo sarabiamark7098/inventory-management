@@ -18,7 +18,9 @@ deployments. The only coupling is the HTTP sync contract, plus a small status
 vocabulary intentionally duplicated in `api/app/Domain/InventoryStatus.php` and
 `web/src/domain/constants.js`.
 
-Deploying to a server? See **[DEPLOYMENT.md](DEPLOYMENT.md)** (Ubuntu 24.04,
+Deploying to a server? Copy `api/`, `web/` and `install-on-server.sh` across and
+run `sudo bash install-on-server.sh`. Details and the manual procedure are in
+**[DEPLOYMENT.md](DEPLOYMENT.md)** (Ubuntu 24.04,
 nginx + PHP-FPM + MySQL, both projects on subpaths of one host).
 
 > **The QR scanner needs HTTPS.** Browsers only expose the camera

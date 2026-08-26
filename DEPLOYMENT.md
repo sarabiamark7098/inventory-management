@@ -35,6 +35,30 @@ name or a CA. Nothing in the application changes — only nginx and the two URLs
 
 ---
 
+## Fast path: one command
+
+If you just want it running, copy `install-on-server.sh` to the server alongside
+the two project directories and run it. It performs every step below and then
+verifies the result.
+
+```bash
+sudo bash install-on-server.sh
+```
+
+It expects `/var/www/api` and `/var/www/web` to already exist, and is safe to
+re-run — packages install only if missing, the database user is created only if
+absent, and the app key and database password are generated once then left
+alone.
+
+It never asks for a password: the database password is generated on the server
+and written into `api/.env`. The one secret you must add by hand is
+`MAIL_PASSWORD`, and it will tell you so at the end.
+
+The rest of this document is the same procedure done manually, and is worth
+reading if a step fails.
+
+---
+
 ## 1. Packages
 
 ```bash
