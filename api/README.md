@@ -13,6 +13,12 @@ composer install
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS ict_inventory CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 ```
 
+For a server, start from the production template instead:
+
+```bash
+cp .env.production.example .env
+```
+
 Configure `DB_*` in `.env`, then:
 
 ```bash

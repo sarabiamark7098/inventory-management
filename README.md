@@ -19,11 +19,12 @@ vocabulary intentionally duplicated in `api/app/Domain/InventoryStatus.php` and
 `web/src/domain/constants.js`.
 
 Deploying to a server? See **[DEPLOYMENT.md](DEPLOYMENT.md)** (Ubuntu 24.04,
-nginx + PHP-FPM + MySQL).
+nginx + PHP-FPM + MySQL, both projects on subpaths of one host).
 
-> **HTTPS is a functional requirement, not just hardening.** The QR scanner uses
-> `getUserMedia()`, which browsers only expose in a secure context. Over plain
-> HTTP the camera silently never starts.
+> **The QR scanner needs HTTPS.** Browsers only expose the camera
+> (`getUserMedia`) in a secure context — HTTPS or `localhost`. Over plain HTTP,
+> or on a bare IP, the camera silently never starts and the app falls back to its
+> text input. Everything else works normally.
 
 ## Quick start
 

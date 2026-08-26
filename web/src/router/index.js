@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 
@@ -43,7 +43,20 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  /*
+   * Hash routing, deliberately.
+   *
+   * The app is served from a subdirectory (/inventory_management) on a host it
+   * does not control the root of. With history routing that requires the build
+   * to know its own path AND nginx to serve index.html for every unknown route —
+   * two settings that must agree, and the usual cause of "works until you press
+   * refresh".
+   *
+   * Everything after the # never reaches the server, so a deep link and a
+   * refresh both work with no server-side fallback at all. The cost is a # in
+   * the URL, which is a fair trade for an internal tool.
+   */
+  history: createWebHashHistory(),
   routes,
 })
 

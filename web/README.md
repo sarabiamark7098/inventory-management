@@ -75,6 +75,16 @@ Pinned to the **4.x line, which is MIT-licensed**. PrimeVue 5 is commercially
 licensed and logs `[PrimeUI] PrimeUI license is not configured` at runtime.
 Components are registered globally in `src/plugins/primevue-components.js`.
 
+## Deploying under a subdirectory
+
+The build has **no base-path setting**. Assets are emitted as relative URLs
+(`./assets/…`) and the router uses hash history, so the same `dist/` runs at the
+domain root, at `/inventory_management`, or anywhere else — nothing to keep in
+sync with nginx, and no history-mode fallback to misconfigure.
+
+`VITE_API_URL` is the only build-time setting the client needs. For a server,
+start from `.env.production.example`.
+
 ## Mobile
 
 The UI is built for phones as well as desktops, because audits happen on the
