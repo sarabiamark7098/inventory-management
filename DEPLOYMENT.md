@@ -4,12 +4,18 @@ Target: **Ubuntu 24.04 LTS**, nginx + PHP 8.4-FPM + MySQL 8.
 
 | | URL | Directory on the server |
 | --- | --- | --- |
-| UI | `http://172.26.120.49/inventory_management` | `/var/www/web` |
-| API | `http://172.26.120.49/inventory_management_api` | `/var/www/api` |
+| UI | `http://172.26.120.49/inventory_management` | `/var/www/ect/inventory-management/web` |
+| API | `http://172.26.120.49/inventory_management_api` | `/var/www/ect/inventory-management/api` |
 
-Only those two directories are copied to the server. Everything else — nginx
-config, systemd units, commands — is inline below, so nothing extra needs to be
-deployed. If your IP differs, change it in step 8 and in `api/.env`.
+Only `api/` and `web/` are copied to the server, under a shared base directory.
+Everything else — nginx config, systemd units, commands — is inline below, so
+nothing extra needs to be deployed.
+
+If your base path or IP differ, the installer takes both as variables:
+
+```bash
+sudo APP_BASE=/var/www/ect/inventory-management SERVER_IP=172.26.120.49 bash install-on-server.sh
+```
 
 ---
 
@@ -45,7 +51,7 @@ verifies the result.
 sudo bash install-on-server.sh
 ```
 
-It expects `/var/www/api` and `/var/www/web` to already exist, and is safe to
+It expects `/var/www/ect/inventory-management/api` and `/var/www/ect/inventory-management/web` to already exist, and is safe to
 re-run — packages install only if missing, the database user is created only if
 absent, and the app key and database password are generated once then left
 alone.
@@ -103,11 +109,11 @@ sudo mysql -e "CREATE USER 'ict_inventory'@'127.0.0.1' IDENTIFIED BY 'CHANGE_ME'
 
 ## 3. Code
 
-Copy the two project directories to `/var/www`:
+Copy the two project directories under the base path:
 
 ```
-/var/www/api    <- this repo's api/
-/var/www/web    <- this repo's web/
+/var/www/ect/inventory-management/api    <- this repo's api/
+/var/www/ect/inventory-management/web    <- this repo's web/
 ```
 
 ## 4. Configuration
@@ -115,18 +121,18 @@ Copy the two project directories to `/var/www`:
 Each project ships its own production template:
 
 ```bash
-cp /var/www/api/.env.production.example /var/www/api/.env
+cp /var/www/ect/inventory-management/api/.env.production.example /var/www/ect/inventory-management/api/.env
 ```
 
 ```bash
-cp /var/www/web/.env.production.example /var/www/web/.env.production
+cp /var/www/ect/inventory-management/web/.env.production.example /var/www/ect/inventory-management/web/.env.production
 ```
 
-Edit `/var/www/api/.env` and set `DB_PASSWORD` and `MAIL_PASSWORD`. `APP_URL`
+Edit `/var/www/ect/inventory-management/api/.env` and set `DB_PASSWORD` and `MAIL_PASSWORD`. `APP_URL`
 and `FRONTEND_URLS` already point at `172.26.120.49`.
 
 ```bash
-cd /var/www/api && php artisan key:generate --force
+cd /var/www/ect/inventory-management/api && php artisan key:generate --force
 ```
 
 `web/.env.production` needs no edits — `VITE_API_URL` is the only build-time
@@ -143,7 +149,7 @@ sudo mkdir -p /srv/ict-inventory
 ```
 
 ```bash
-sudo ln -sfn /var/www/web/dist /srv/ict-inventory/inventory_management && sudo ln -sfn /var/www/api/public /srv/ict-inventory/inventory_management_api
+sudo ln -sfn /var/www/ect/inventory-management/web/dist /srv/ict-inventory/inventory_management && sudo ln -sfn /var/www/ect/inventory-management/api/public /srv/ict-inventory/inventory_management_api
 ```
 
 Symlinks rather than nginx's `alias`: `alias` mis-resolves paths when combined
@@ -152,33 +158,34 @@ $fastcgi_script_name` looks *inside* the alias and 404s. A plain `root` also
 gives Laravel the correct `SCRIPT_NAME`, which is how it strips the
 subdirectory from the URL and matches its routes.
 
-This also means nginx never serves `/var/www` itself, so `api/.env` is not
-reachable over HTTP.
+This also means nginx never serves `/var/www/ect/inventory-management` itself, so `api/.env` — which holds
+the app key, database password and mailbox password — is not reachable over
+HTTP.
 
 ## 6. Build and migrate
 
 ```bash
-cd /var/www/api && composer install --no-dev --optimize-autoloader --no-interaction
+cd /var/www/ect/inventory-management/api && composer install --no-dev --optimize-autoloader --no-interaction
 ```
 
 `--no-dev` keeps the debug toolchain, and its attack surface, off the server.
 
 ```bash
-cd /var/www/api && php artisan migrate --force && php artisan db:seed --class=UserSeeder --force
+cd /var/www/ect/inventory-management/api && php artisan migrate --force && php artisan db:seed --class=UserSeeder --force
 ```
 
 Cache config, routes and views. **Clear first** — otherwise a stale cache is
 what gets re-cached:
 
 ```bash
-cd /var/www/api && php artisan optimize:clear && php artisan config:cache && php artisan route:cache && php artisan view:cache
+cd /var/www/ect/inventory-management/api && php artisan optimize:clear && php artisan config:cache && php artisan route:cache && php artisan view:cache
 ```
 
 Build the client. `npm ci` installs exactly the lockfile; `npm install` can
 silently drift:
 
 ```bash
-cd /var/www/web && npm ci && npm run build
+cd /var/www/ect/inventory-management/web && npm ci && npm run build
 ```
 
 ## 7. Permissions
@@ -186,11 +193,11 @@ cd /var/www/web && npm ci && npm run build
 PHP-FPM runs as `www-data`, and Laravel writes logs, caches and sessions:
 
 ```bash
-sudo chown -R www-data:www-data /var/www/api /var/www/web
+sudo chown -R www-data:www-data /var/www/ect/inventory-management/api /var/www/ect/inventory-management/web
 ```
 
 ```bash
-sudo find /var/www/api/storage /var/www/api/bootstrap/cache -type d -exec chmod 775 {} \;
+sudo find /var/www/ect/inventory-management/api/storage /var/www/ect/inventory-management/api/bootstrap/cache -type d -exec chmod 775 {} \;
 ```
 
 ## 8. nginx
@@ -295,7 +302,7 @@ After=network.target mysql.service
 Type=oneshot
 User=www-data
 Group=www-data
-WorkingDirectory=/var/www/api
+WorkingDirectory=/var/www/ect/inventory-management/api
 ExecStart=/usr/bin/php artisan schedule:run
 
 # The scheduler only reads and prunes; it needs no wider access than that.
@@ -303,7 +310,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/www/api/storage
+ReadWritePaths=/var/www/ect/inventory-management/api/storage
 UNIT
 ```
 
@@ -386,7 +393,7 @@ base path and the matching nginx fallback.
 The piece most likely to fail silently:
 
 ```bash
-cd /var/www/api && php artisan tinker --execute="Mail::raw('deployment test', fn(\$m) => \$m->to('you@dswd.gov.ph')->subject('ICT Inventory test'));"
+cd /var/www/ect/inventory-management/api && php artisan tinker --execute="Mail::raw('deployment test', fn(\$m) => \$m->to('you@dswd.gov.ph')->subject('ICT Inventory test'));"
 ```
 
 No exception means the relay accepted it. If nothing arrives, the problem is
@@ -424,7 +431,7 @@ not a backup.
 | 502 Bad Gateway | PHP-FPM socket path. Check `php -v` matches `php8.4-fpm.sock` in the config |
 | 500 on every API call, empty log | `storage/` not writable by `www-data` |
 | 500 instead of 401 when signed out | Older build; fixed by `redirectGuestsTo` in `bootstrap/app.php` |
-| `.env` downloadable over HTTP | Something is serving `/var/www` directly. Check no other nginx site is enabled |
+| `.env` downloadable over HTTP | Something is serving `/var/www/ect/inventory-management` directly. Check no other nginx site is enabled |
 | Camera never starts | Not a secure context. Expected on a bare IP over HTTP |
 | Sign-in code never arrives | `storage/logs/laravel.log`, then SPF/DKIM for the sending domain |
 | Config change has no effect | Stale `config:cache`. Re-run the cache commands in step 6 |
@@ -432,5 +439,5 @@ not a backup.
 Logs:
 
 ```bash
-sudo tail -f /var/log/nginx/ict-inventory.error.log /var/www/api/storage/logs/laravel.log
+sudo tail -f /var/log/nginx/ict-inventory.error.log /var/www/ect/inventory-management/api/storage/logs/laravel.log
 ```

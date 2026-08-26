@@ -5,10 +5,14 @@
 #
 #   sudo bash install-on-server.sh
 #
-# Expects the two project directories to already be in place:
+# Expects the project to already be in place on the server:
 #
-#   /var/www/api    <- this repo's api/
-#   /var/www/web    <- this repo's web/
+#   /var/www/ect/inventory-management/api    <- this repo's api/
+#   /var/www/ect/inventory-management/web    <- this repo's web/
+#
+# If it lives elsewhere, point APP_BASE at it — no other edit is needed:
+#
+#   sudo APP_BASE=/var/www/etc/inventory-management bash install-on-server.sh
 #
 # Safe to re-run. Every step is idempotent: packages are only installed if
 # missing, the database and user are created only if absent, and the app key and
@@ -21,8 +25,11 @@
 set -euo pipefail
 
 SERVER_IP="${SERVER_IP:-172.26.120.49}"
-API_DIR=/var/www/api
-WEB_DIR=/var/www/web
+# Overridable so a different base path (or the etc/ect spelling) is one variable,
+# not a search-and-replace through the script.
+APP_BASE="${APP_BASE:-/var/www/ect/inventory-management}"
+API_DIR="$APP_BASE/api"
+WEB_DIR="$APP_BASE/web"
 SERVE_ROOT=/srv/ict-inventory
 DB_NAME=ict_inventory
 DB_USER=ict_inventory
@@ -33,10 +40,14 @@ warn() { printf '    \033[1;33m!\033[0m %s\n' "$1"; }
 die()  { printf '\n\033[1;31mERROR: %s\033[0m\n' "$1" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "Run with sudo."
+[[ -d "$APP_BASE" ]] || die "$APP_BASE not found. Set APP_BASE if the project is elsewhere."
 [[ -d "$API_DIR" ]] || die "$API_DIR not found. Copy the repo's api/ there first."
 [[ -d "$WEB_DIR" ]] || die "$WEB_DIR not found. Copy the repo's web/ there first."
 [[ -f "$API_DIR/artisan" ]] || die "$API_DIR does not look like the Laravel project (no artisan)."
 [[ -f "$WEB_DIR/package.json" ]] || die "$WEB_DIR does not look like the Vue project (no package.json)."
+
+printf '\nProject base : %s\n' "$APP_BASE"
+printf 'Server IP    : %s\n' "$SERVER_IP"
 
 # --------------------------------------------------------------- 1. packages
 say "Installing packages"
