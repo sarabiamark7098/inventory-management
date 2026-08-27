@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\RecordsActivity;
 use App\Domain\Role;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -12,7 +13,10 @@ use Laravel\Sanctum\HasApiTokens;
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use HasApiTokens, HasFactory, Notifiable;
+    use HasApiTokens, HasFactory, Notifiable, RecordsActivity;
+
+    /** Groups this model's entries in the activity log. */
+    public const ACTIVITY_LOG_NAME = 'users';
 
     protected $fillable = ['name', 'email', 'role', 'is_active'];
 

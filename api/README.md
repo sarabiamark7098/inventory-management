@@ -25,6 +25,12 @@ Configure `DB_*` in `.env`, then:
 php artisan migrate --seed
 ```
 
+Seeds accounts, offices and categories. Sample equipment is opt-in:
+
+```bash
+php artisan db:seed --class=EquipmentSeeder
+```
+
 ```bash
 php artisan serve --port=8000
 ```

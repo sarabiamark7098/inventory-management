@@ -72,6 +72,7 @@ REST API below, plus the status vocabulary duplicated in
 - **US-2.7:** As an Inventory Manager, flag a category as recording two serial numbers, so a desktop set captures both the system unit and the monitor as one asset.
 - **US-2.8:** As an Inventory Manager, add free-text remarks to an asset for anything the structured fields have no column for — defect history, transfer notes, why a unit is set aside.
 - **US-2.9:** As an Inventory Manager, review everything that has been removed in an Archive screen and restore an asset archived by mistake; as a System Admin, permanently destroy an archived asset that has been disposed of, leaving an audit snapshot behind.
+- **US-2.10:** As a Property Officer, open a History screen and see every change anyone has made — who, what, when, and which fields moved from what to what — filtered by person, record type, action or date.
 
 ### Epic 3: Borrowing & Return Management
 - **US-3.1:** As an Inventory Manager, record a loan request on a borrower's behalf, specifying required dates and intended usage. Borrowers are named on the transaction and do not hold accounts.
@@ -195,20 +196,33 @@ CREATE TABLE borrowing_transactions (
     FOREIGN KEY (equipment_id) REFERENCES equipment(id) ON DELETE SET NULL
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- Change Log: an append-only audit trail of every write, including the
--- PURGE snapshot that outlives the row it describes.
-CREATE TABLE sync_changes (
-    id CHAR(36) PRIMARY KEY,
-    entity_type VARCHAR(50) NOT NULL,
-    entity_id CHAR(36) NOT NULL,
-    operation VARCHAR(20) NOT NULL,
-    data JSON NOT NULL,
-    client_id VARCHAR(100),
-    client_timestamp DATETIME(3) NOT NULL,
-    synced_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    INDEX sync_changes_entity_idx (entity_type, entity_id),
-    INDEX sync_changes_synced_at_idx (synced_at)
+-- Activity Log: an append-only audit trail of every write, from
+-- spatie/laravel-activitylog. Published from the package with one change —
+-- `subject_id` is a string, because four of the five logged models key on
+-- CHAR(36) UUIDs and the package's bigint would coerce every one of them to 0.
+CREATE TABLE activity_log (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    log_name VARCHAR(255),              -- equipment | categories | offices | borrowings | users
+    description TEXT NOT NULL,          -- the operation, same vocabulary as `event`
+    subject_type VARCHAR(255),
+    subject_id VARCHAR(36),             -- the record this happened to
+    event VARCHAR(255),                 -- INSERT | UPDATE | DELETE | RESTORE | PURGE
+    causer_type VARCHAR(255),
+    causer_id BIGINT UNSIGNED,          -- users.id; NULL once the account is deleted
+    attribute_changes JSON,             -- { attributes: {...}, old: {...} }
+    properties JSON,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    INDEX activity_log_log_name_index (log_name),
+    INDEX subject (subject_type, subject_id),
+    INDEX causer (causer_type, causer_id),
+    INDEX activity_log_created_at_index (created_at),
+    INDEX activity_log_event_created_at_index (event, created_at)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- `sync_changes` was the previous audit log. Its rows were copied into
+-- activity_log and nothing writes to it any more; the table is left in place
+-- only so the move stays reversible.
 ```
 
 ---
@@ -249,13 +263,56 @@ reading correctly.
   comes back `AVAILABLE` if that loan has since closed.
 - `DELETE /api/archive/equipment/{id}` destroys the row permanently.
   **Admin-only**, refused while the asset is not archived or is still out on an
-  active loan, and it writes a full snapshot to `sync_changes` as operation
-  `PURGE` first - after the delete that snapshot is the only remaining evidence
-  the asset existed.
+  active loan. Deleting the row fires Eloquent's `deleted` event, and the
+  activity log entry that produces carries a full snapshot of it - after the
+  delete that entry is the only remaining evidence the asset existed.
 
 A restore can never collide on identifiers: MySQL's unique indexes cover
 soft-deleted rows, so an archived asset keeps its asset tag, property number
 and serials reserved for as long as it sits there.
+
+---
+
+## The Activity History
+
+Every write is recorded by `spatie/laravel-activitylog`, driven from Eloquent's
+model events by the `RecordsActivity` trait rather than from any controller.
+That is what makes the log complete: a write from the REST API, a console
+command or a seeder is recorded the same way, and no code path can skip it by
+forgetting a call.
+
+- `GET /api/history` — newest first, paginated, filterable by `search`,
+  `entityType`, `operation`, `actor`, `from` and `to`.
+- `GET /api/history/{id}` — one entry with its field-level before/after.
+
+Read-only by construction: no route edits or deletes an entry.
+
+Three things the package could not know about this schema, all handled in the
+trait:
+
+1. **Operations, not events.** Nothing here uses Laravel's `SoftDeletes`, so
+   archiving and restoring are both plain `updated` events. The trait reads the
+   `deleted_at` transition to tell `DELETE`, `RESTORE` and `UPDATE` apart, and
+   writes the result to both `description` and the indexed `event` column.
+2. **Restores must be logged.** The package suppresses the `updated` event that
+   clears `deleted_at`, assuming `SoftDeletes` will fire its own `restored`
+   event. That event never comes here, so `isRestoring()` is overridden to
+   `false` — otherwise a restore is the one operation the log silently misses.
+3. **A destroyed row has no "after".** The package files a deleted record's
+   final state under `old` rather than `attributes`, so the History screen
+   reads whichever half is present.
+
+**Who can read it.** Any signed-in user, except account activity (`users`),
+which is admin-only — in the listing, in the filter options, and on the
+single-entry route, so hiding it is a permission rather than a filter.
+
+**Naming records.** An entry stores only the fields that changed, so an edit
+carries no asset tag. The screen resolves the record's name from the live table,
+falling back to the entry's own snapshot, and finally to the record's `INSERT`
+or `PURGE` entry elsewhere in the log — which is what lets a purged asset's
+whole trail still read by name. Search works the same way in reverse, so
+searching an asset tag returns every entry about that asset rather than only the
+ones that happen to contain the text.
 
 ---
 

@@ -46,6 +46,12 @@ const routes = [
     meta: { title: 'Archive' },
   },
   {
+    path: '/history',
+    name: 'history',
+    component: () => import('@/views/HistoryView.vue'),
+    meta: { title: 'History' },
+  },
+  {
     path: '/accounts',
     name: 'accounts',
     component: () => import('@/views/AccountsView.vue'),

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\RecordsActivity;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
@@ -16,7 +17,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class Office extends Model
 {
-    use HasUuids;
+    use HasUuids, RecordsActivity;
+
+    /** Groups this model's entries in the activity log. */
+    public const ACTIVITY_LOG_NAME = 'offices';
 
     protected $table = 'offices';
 

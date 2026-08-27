@@ -24,6 +24,7 @@ const links = computed(() =>
     { to: '/offices', label: 'Offices', icon: 'pi pi-sitemap' },
     { to: '/borrowing', label: 'Borrowing', icon: 'pi pi-arrow-right-arrow-left' },
     { to: '/archive', label: 'Archive', icon: 'pi pi-inbox' },
+    { to: '/history', label: 'History', icon: 'pi pi-history' },
     // Account management is admin-only; hide what the API would refuse anyway.
     ...(auth.isAdmin ? [{ to: '/accounts', label: 'Accounts', icon: 'pi pi-users' }] : []),
   ],
@@ -86,7 +87,7 @@ async function saveProfile() {
       />
 
       <RouterLink to="/" class="app-header__brand">
-        <span class="app-header__mark">ICT</span>
+        <span class="app-header__mark">RICTMS</span>
         <span class="app-header__title">Equipment &amp; Borrowing</span>
       </RouterLink>
 
@@ -195,7 +196,7 @@ async function saveProfile() {
 .app-header__mark {
   display: grid;
   place-items: center;
-  width: 1.85rem;
+  width: 3.85rem;
   height: 1.85rem;
   border-radius: 0.4rem;
   background: var(--p-primary-color);

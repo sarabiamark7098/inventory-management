@@ -8,7 +8,6 @@ use App\Models\BorrowingTransaction;
 use App\Models\Category;
 use App\Models\Equipment;
 use App\Models\Office;
-use App\Models\SyncChange;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -20,7 +19,11 @@ use Throwable;
  *
  * Every mutation — from the REST controllers or from a console command —
  * arrives here as a batch of changes, each applied in its own transaction with
- * a per-change verdict, and each recorded in the `sync_changes` audit log.
+ * a per-change verdict.
+ *
+ * Nothing here writes the audit log. That is the `RecordsActivity` trait's job,
+ * fired by Eloquent's own model events, which is what makes the log impossible
+ * to bypass: a write that skipped this service would still be recorded.
  *
  * The conflict rules survived the removal of offline mode, because they were
  * never really about offline: two operators on two browsers can still submit
@@ -30,7 +33,7 @@ use Throwable;
 class SyncService
 {
     /**
-     * @param  array{clientId: string, changes: array<int, array>}  $request
+     * @param  array{changes: array<int, array>}  $request
      */
     public function push(array $request): array
     {
@@ -44,7 +47,7 @@ class SyncService
 
         foreach ($changes as $change) {
             try {
-                $results[] = $this->applyChange($change, $request['clientId']);
+                $results[] = $this->applyChange($change);
             } catch (Throwable $e) {
                 if ($this->isInfrastructureFailure($e)) {
                     // The database is unreachable — fail the whole request so the
@@ -76,16 +79,16 @@ class SyncService
      * who removes the wrong asset has a way back that does not involve
      * re-typing a property record.
      *
-     * The identifiers are re-checked first. An asset can sit in the archive for
-     * months, and nothing stopped someone registering a new machine under the
-     * same asset tag or serial in the meantime — restoring blindly would hit a
-     * unique index and surface as a 500 with no explanation.
+     * No identifier collision is possible on the way back in: the unique indexes
+     * on asset_tag, property_number and both serials cover archived rows as well
+     * as live ones, so an archived asset keeps its identifiers reserved and
+     * nothing can have taken them while it was away.
      *
      * @return array{status: string, message?: string, data?: array}
      */
-    public function restoreEquipment(string $id, string $actor): array
+    public function restoreEquipment(string $id): array
     {
-        return DB::transaction(function () use ($id, $actor) {
+        return DB::transaction(function () use ($id) {
             $asset = Equipment::query()->lockForUpdate()->find($id);
 
             if (! $asset) {
@@ -110,15 +113,6 @@ class SyncService
 
             $fresh = $asset->fresh();
 
-            SyncChange::create([
-                'entity_type' => 'equipment',
-                'entity_id' => $id,
-                'operation' => 'RESTORE',
-                'data' => $fresh->toSyncArray(),
-                'client_id' => $actor,
-                'client_timestamp' => $now,
-            ]);
-
             return ['status' => 'RESTORED', 'data' => $fresh->toSyncArray()];
         });
     }
@@ -130,15 +124,16 @@ class SyncService
      * not archived, or while a loan still physically holds it — purging then
      * would leave a borrower holding a device the system has no record of.
      *
-     * A snapshot of the destroyed row is written to the audit log first: after
-     * this returns, that log entry is the only remaining evidence the asset
-     * ever existed, which is exactly what a property audit will ask for.
+     * Deleting the row fires Eloquent's `deleted` event, and the activity log
+     * entry that produces carries a full snapshot of it. After this returns
+     * that entry is the only remaining evidence the asset ever existed, which
+     * is exactly what a property audit will ask for.
      *
      * @return array{status: string, message?: string, assetTag?: string, detachedLoans?: int}
      */
-    public function purgeEquipment(string $id, string $actor): array
+    public function purgeEquipment(string $id): array
     {
-        return DB::transaction(function () use ($id, $actor) {
+        return DB::transaction(function () use ($id) {
             $asset = Equipment::query()->lockForUpdate()->find($id);
 
             if (! $asset) {
@@ -170,15 +165,6 @@ class SyncService
             // confirmation dialog say how much history is about to come loose.
             $detached = BorrowingTransaction::query()->where('equipment_id', $id)->count();
 
-            SyncChange::create([
-                'entity_type' => 'equipment',
-                'entity_id' => $id,
-                'operation' => 'PURGE',
-                'data' => $asset->toSyncArray(),
-                'client_id' => $actor,
-                'client_timestamp' => Carbon::now(),
-            ]);
-
             $assetTag = $asset->asset_tag;
             $asset->delete();
 
@@ -194,26 +180,15 @@ class SyncService
     /* Dispatch                                                            */
     /* ------------------------------------------------------------------ */
 
-    protected function applyChange(array $change, string $clientId): array
+    protected function applyChange(array $change): array
     {
-        return DB::transaction(function () use ($change, $clientId) {
+        return DB::transaction(function () use ($change) {
             $result = match ($change['table']) {
                 'offices' => $this->applyOffice($change),
                 'categories' => $this->applyCategory($change),
                 'equipment' => $this->applyEquipment($change),
                 'borrowings' => $this->applyBorrowing($change),
             };
-
-            if (in_array($result['status'], ['APPLIED', 'CONFLICT'], true)) {
-                SyncChange::create([
-                    'entity_type' => $change['table'],
-                    'entity_id' => $change['docId'],
-                    'operation' => $change['action'],
-                    'data' => $change['payload'],
-                    'client_id' => $clientId,
-                    'client_timestamp' => Carbon::parse($change['clientTimestamp']),
-                ]);
-            }
 
             return $result;
         });

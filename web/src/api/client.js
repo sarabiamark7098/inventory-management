@@ -167,4 +167,9 @@ export const api = {
   purgeEquipment: (id) => request(`/archive/equipment/${id}`, { method: 'DELETE' }),
 
   stats: () => request('/stats'),
+
+  // Activity history. Paged and filtered server-side: unlike the inventory
+  // collections this one grows without bound.
+  history: (params) => request(`/history${query(params)}`),
+  historyEntry: (id) => request(`/history/${id}`),
 }

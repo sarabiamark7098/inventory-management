@@ -178,8 +178,9 @@ class InventoryController extends Controller
         $payload['updatedAt'] ??= $now;
 
         $response = $this->sync->push([
-            // The audit log's only remaining author is whoever is signed in.
-            'clientId' => request()->user()?->email ?? 'rest-api',
+            // No author is passed: the activity log resolves the causer from
+            // the authenticated user itself, so there is nothing here to keep
+            // in step with it.
             'changes' => [[
                 'id' => (string) Str::uuid(),
                 'table' => $table,

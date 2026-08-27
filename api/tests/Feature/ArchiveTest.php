@@ -7,10 +7,10 @@ use App\Models\BorrowingTransaction;
 use App\Models\Category;
 use App\Models\Equipment;
 use App\Models\Office;
-use App\Models\SyncChange;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
+use Spatie\Activitylog\Models\Activity;
 use Tests\TestCase;
 
 /**
@@ -171,12 +171,14 @@ class ArchiveTest extends TestCase
             ->deleteJson("/api/archive/equipment/{$id}")
             ->assertOk();
 
-        $audit = SyncChange::where('entity_id', $id)->where('operation', 'PURGE')->firstOrFail();
+        $audit = Activity::where('subject_id', $id)->where('event', 'PURGE')->firstOrFail();
 
         // The row is gone; this snapshot is the only remaining evidence of it.
-        $this->assertSame('ICT-ARC-0006', $audit->data['assetTag']);
-        $this->assertSame('PN-ICT-ARC-0006', $audit->data['propertyNumber']);
-        $this->assertSame('admin@ict.test', $audit->client_id);
+        // A destroyed row has no "after" state, so its final one is filed as `old`.
+        $snapshot = $audit->attribute_changes['old'];
+        $this->assertSame('ICT-ARC-0006', $snapshot['asset_tag']);
+        $this->assertSame('PN-ICT-ARC-0006', $snapshot['property_number']);
+        $this->assertSame('admin@ict.test', $audit->causer->email);
     }
 
     public function test_a_live_asset_cannot_be_destroyed(): void
@@ -275,8 +277,8 @@ class ArchiveTest extends TestCase
             ->postJson("/api/archive/equipment/{$id}/restore")
             ->assertOk();
 
-        $audit = SyncChange::where('entity_id', $id)->where('operation', 'RESTORE')->firstOrFail();
-        $this->assertSame('manager@ict.test', $audit->client_id);
+        $audit = Activity::where('subject_id', $id)->where('event', 'RESTORE')->firstOrFail();
+        $this->assertSame('manager@ict.test', $audit->causer->email);
     }
 
     public function test_a_restored_asset_leaves_the_archive(): void

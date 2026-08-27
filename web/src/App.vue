@@ -5,11 +5,13 @@ import { useRoute } from 'vue-router'
 import AppHeader from '@/components/AppHeader.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useConnectionStore } from '@/stores/connection'
+import { useHistoryStore } from '@/stores/history'
 import { useInventoryStore } from '@/stores/inventory'
 
 const route = useRoute()
 const auth = useAuthStore()
 const inventory = useInventoryStore()
+const history = useHistoryStore()
 const connection = useConnectionStore()
 
 const showShell = computed(() => route.meta.layout !== 'blank' && auth.isAuthenticated)
@@ -25,8 +27,15 @@ connection.start()
 watch(
   () => auth.isAuthenticated,
   (signedIn) => {
-    if (signedIn) inventory.start()
-    else inventory.stop()
+    if (signedIn) {
+      inventory.start()
+    } else {
+      inventory.stop()
+      // The history is loaded per visit rather than on sign-in, but it still
+      // has to be dropped: it names people and records, and a shared
+      // workstation must not show the previous user's.
+      history.reset()
+    }
   },
   { immediate: true },
 )

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\RecordsActivity;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -10,7 +11,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Equipment extends Model
 {
-    use HasFactory, HasUuids;
+    use HasFactory, HasUuids, RecordsActivity;
+
+    /** Groups this model's entries in the activity log. */
+    public const ACTIVITY_LOG_NAME = 'equipment';
 
     protected $table = 'equipment';
 

@@ -46,6 +46,15 @@ Set the `DB_*` values in `api/.env`, then:
 cd api && php artisan migrate --seed && php artisan serve --port=8000
 ```
 
+That seeds one admin account, the 81-office register and the category taxonomy —
+configuration a field office keeps. The sample equipment is **not** included,
+because five fictional machines have no business in a property register that
+gets audited. Add them to a demo or development database with:
+
+```bash
+cd api && php artisan db:seed --class=EquipmentSeeder
+```
+
 **2. UI**
 
 ```bash
@@ -114,7 +123,7 @@ to do. Everyone who signs in handles inventory.
 The client hides what a role cannot do, the router guards the routes, and the
 API enforces it independently — the UI is a convenience, not the boundary.
 
-The seeder creates one admin from `SEED_ADMIN_EMAIL`; everyone else is
+`UserSeeder` creates one admin from `SEED_ADMIN_EMAIL`; everyone else is
 provisioned from the Accounts screen. Every address must be a real mailbox on an
 allowed domain, since a sign-in code has to actually arrive. With
 `MAIL_MAILER=log` the code is written to `api/storage/logs/laravel.log`
@@ -296,11 +305,53 @@ Restoring can never collide on identifiers: MySQL's unique indexes cover
 soft-deleted rows, so an archived asset keeps its asset tag, property number and
 serials reserved for as long as it sits there — nothing can have claimed them.
 
-A permanent delete writes a full snapshot of the row to `sync_changes` as
-operation `PURGE` **before** destroying it. After that, the snapshot is the only
-remaining evidence the asset ever existed, which is what a property audit will
-ask for. The loan rows survive too, with their `equipment_id` set to `NULL`, and
+A permanent delete leaves a full snapshot of the row in the activity log as
+operation `PURGE`. After that, the snapshot is the only remaining evidence the
+asset ever existed, which is what a property audit will ask for. The loan rows survive too, with their `equipment_id` set to `NULL`, and
 the confirmation dialog says how many will come loose before you agree to it.
+
+## History
+
+Every change anyone makes is recorded, and the **History** screen is where you
+read it: who, what, when, and which fields moved from what to what. Filter by
+person, record type, action or date range, or search an asset tag to get that
+asset's whole trail.
+
+Backed by [`spatie/laravel-activitylog`](https://github.com/spatie/laravel-activitylog),
+driven from Eloquent model events rather than from the controllers — so a write
+from the API, a console command or a seeder is recorded the same way, and no
+code path can skip it by forgetting a call. Nothing in the app can edit or delete
+an entry.
+
+| Action | Recorded as |
+| --- | --- |
+| Register a record | `INSERT` |
+| Edit one | `UPDATE`, with the before and after of each changed field |
+| Archive one | `DELETE` |
+| Restore one | `RESTORE` |
+| Delete one forever | `PURGE`, with a full snapshot of what was destroyed |
+
+Account activity — provisioning, role changes, deactivation — is recorded too,
+and is visible only to admins.
+
+Three details worth knowing, because they are where the package's defaults do
+not fit this schema:
+
+- Nothing here uses Laravel's `SoftDeletes`; `deleted_at` is an ordinary column.
+  To Eloquent, archiving and restoring are both plain updates, so the trait
+  reads the column's transition to tell the three apart.
+- The package suppresses the update that clears `deleted_at`, expecting
+  `SoftDeletes` to fire a `restored` event. It never does here, so that
+  suppression is overridden — otherwise restores would be the one thing the log
+  missed.
+- An entry stores only what changed, so an edit carries no asset tag. The screen
+  resolves names from the live record, then from the entry's snapshot, then from
+  that record's `INSERT` or `PURGE` entry — which is how a purged asset's trail
+  still reads by name.
+
+> The previous audit table, `sync_changes`, has been migrated into the activity
+> log and is no longer written to. It is left in place so the move stays
+> reversible; nothing reads it.
 
 ## Tests
 
@@ -308,7 +359,7 @@ the confirmation dialog says how many will come loose before you agree to it.
 cd api && php artisan test
 ```
 
-138 tests / 462 assertions covering the loan maths, the conflict engine in both
+157 tests / 548 assertions covering the loan maths, the conflict engine in both
 arrival orders, Last-Write-Wins, equipment reconciliation, request validation,
 the full OTP lifecycle (expiry, reuse, brute force, rate limiting, enumeration
 resistance), the email domain policy, property accountability (PAR required on registration,

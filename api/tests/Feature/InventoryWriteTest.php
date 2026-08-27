@@ -7,13 +7,13 @@ use App\Models\BorrowingTransaction;
 use App\Models\Category;
 use App\Models\Equipment;
 use App\Models\Office;
-use App\Models\SyncChange;
 use App\Models\User;
 use App\Services\SyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Spatie\Activitylog\Models\Activity;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
@@ -112,12 +112,11 @@ class InventoryWriteTest extends TestCase
      * tests keep driving it that way rather than through single-row REST calls,
      * which could not express an overlap between two loans in one submission.
      */
-    private function push(array $changes, string $clientId = 'test-client'): TestResponse
+    private function push(array $changes): TestResponse
     {
-        $payload = ['clientId' => $clientId, 'changes' => $changes];
+        $payload = ['changes' => $changes];
 
         $validator = Validator::make($payload, [
-            'clientId' => ['required', 'string', 'max:100'],
             'changes' => ['present', 'array', 'max:500'],
             'changes.*.id' => ['required', 'string', 'max:100'],
             'changes.*.table' => ['required', 'string', 'in:offices,categories,equipment,borrowings'],
@@ -205,7 +204,11 @@ class InventoryWriteTest extends TestCase
             ->assertJsonPath('results.0.document.customFields.fields.0.key', 'ports');
 
         $this->assertDatabaseHas('categories', ['id' => $id, 'default_loan_days' => 30]);
-        $this->assertDatabaseHas('sync_changes', ['entity_id' => $id, 'operation' => 'INSERT']);
+        $this->assertDatabaseHas('activity_log', [
+            'log_name' => 'categories',
+            'subject_id' => $id,
+            'event' => 'INSERT',
+        ]);
     }
 
     public function test_soft_delete_keeps_the_row_and_marks_it_archived(): void
@@ -1154,7 +1157,9 @@ class InventoryWriteTest extends TestCase
         ])->assertOk();
 
         $this->assertSame('Second', Category::find($this->categoryId)->name);
-        $this->assertSame(0, SyncChange::where('entity_id', $id)->count());
+
+        // A dropped stale write is not an activity: nothing changed.
+        $this->assertSame(0, Activity::where('subject_id', $id)->count());
     }
 
     public function test_rest_endpoints_expose_the_same_data(): void

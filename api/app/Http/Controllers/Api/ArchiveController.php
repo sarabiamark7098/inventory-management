@@ -86,7 +86,7 @@ class ArchiveController extends Controller
             return response()->json(['error' => 'Resource id must be a UUID.'], 422);
         }
 
-        $result = $this->sync->restoreEquipment($id, $request->user()?->email ?? 'unknown');
+        $result = $this->sync->restoreEquipment($id);
 
         return response()->json($result, match ($result['status']) {
             'RESTORED' => 200,
@@ -108,7 +108,7 @@ class ArchiveController extends Controller
             return response()->json(['error' => 'Resource id must be a UUID.'], 422);
         }
 
-        $result = $this->sync->purgeEquipment($id, $request->user()?->email ?? 'unknown');
+        $result = $this->sync->purgeEquipment($id);
 
         return response()->json($result, match ($result['status']) {
             'PURGED' => 200,

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\RecordsActivity;
 use App\Domain\InventoryStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -11,7 +12,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class BorrowingTransaction extends Model
 {
-    use HasFactory, HasUuids;
+    use HasFactory, HasUuids, RecordsActivity;
+
+    /** Groups this model's entries in the activity log. */
+    public const ACTIVITY_LOG_NAME = 'borrowings';
 
     protected $table = 'borrowing_transactions';
 

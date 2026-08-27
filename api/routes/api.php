@@ -3,6 +3,7 @@
 use App\Domain\Role;
 use App\Http\Controllers\Api\ArchiveController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\UserController;
 use Illuminate\Support\Facades\Route;
@@ -49,6 +50,11 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     Route::get('/borrowings', [InventoryController::class, 'borrowings']);
     Route::get('/stats', [InventoryController::class, 'stats']);
     Route::get('/archive', [ArchiveController::class, 'index']);
+
+    // Read-only by design: there is no route that edits or removes a log entry.
+    // Account activity inside it is filtered to admins by the controller.
+    Route::get('/history', [HistoryController::class, 'index']);
+    Route::get('/history/{id}', [HistoryController::class, 'show']);
 
     // Writing inventory is limited to staff who physically handle the assets.
     Route::middleware('role:'.Role::ADMIN.','.Role::MANAGER)->group(function () {

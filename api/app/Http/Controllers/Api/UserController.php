@@ -16,6 +16,12 @@ use Illuminate\Validation\ValidationException;
  *
  * Accounts are provisioned here rather than self-registered; a new user simply
  * receives a sign-in code the first time they enter their address.
+ *
+ * Every change here lands in the activity log through the model's
+ * `RecordsActivity` trait. Provisioning an account, changing someone's role and
+ * deactivating a colleague are the most consequential actions in the system,
+ * and a history that covered laptops but not those would be the wrong way
+ * round.
  */
 class UserController extends Controller
 {

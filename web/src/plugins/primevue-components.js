@@ -21,6 +21,7 @@ import InputNumber from 'primevue/inputnumber'
 import InputOtp from 'primevue/inputotp'
 import InputText from 'primevue/inputtext'
 import Menu from 'primevue/menu'
+import Paginator from 'primevue/paginator'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Select from 'primevue/select'
@@ -53,6 +54,7 @@ const components = {
   InputOtp,
   InputText,
   Menu,
+  Paginator,
   Message,
   ProgressSpinner,
   Select,

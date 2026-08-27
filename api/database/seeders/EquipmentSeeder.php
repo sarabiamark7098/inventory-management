@@ -2,86 +2,34 @@
 
 namespace Database\Seeders;
 
-use App\Models\Category;
 use App\Models\Equipment;
+use App\Models\Office;
 use Illuminate\Database\Seeder;
+use RuntimeException;
 
-/** Starter taxonomy and assets so a fresh install has something to sync down. */
-class InventorySeeder extends Seeder
+/**
+ * Sample assets, one per category, with a full accountability trail.
+ *
+ * **Opt-in.** DatabaseSeeder does not call this, because a real deployment does
+ * not want five fictional machines in a property register that gets audited.
+ * Run it when you want demonstration data:
+ *
+ *     php artisan db:seed --class=EquipmentSeeder
+ *
+ * Depends on both CategorySeeder and OfficeSeeder having run: category ids come
+ * from the constants, office ids are resolved by code. Neither is optional — an
+ * asset with no division is not a record a property officer can use, so a
+ * missing office fails loudly here rather than writing a NULL nobody notices
+ * until an audit.
+ */
+class EquipmentSeeder extends Seeder
 {
-    /*
-     * Categories are referenced by these constants, never by array position:
-     * inserting a category used to shift every later index and silently move
-     * equipment into the wrong category.
-     */
-    private const CAT_LAPTOPS = '0f2a1c34-1111-4a11-8a11-000000000001';
-
-    private const CAT_NETWORKING = '0f2a1c34-1111-4a11-8a11-000000000002';
-
-    private const CAT_PERIPHERALS = '0f2a1c34-1111-4a11-8a11-000000000003';
-
-    private const CAT_DESKTOPS = '0f2a1c34-1111-4a11-8a11-000000000004';
-
     public function run(): void
     {
-        // Resolved by code: the office register is the source of truth for the
-        // org chart, and codes are its stable business key.
-        $office = fn (string $code) => \App\Models\Office::where('code', $code)->value('id');
-        $ict = $office('XI-FO-PPD-ICT');
-        $smu = $office('XI-FO-SMU');
-        $ppd = $office('XI-FO-PPD');
-        $ord = $office('XI-FO-ORD');
-
-        $categories = [
-            [
-                'id' => self::CAT_LAPTOPS,
-                'name' => 'Laptops',
-                'description' => 'Portable computers issued to staff and students.',
-                'default_loan_days' => 14,
-                'custom_fields' => ['fields' => [
-                    ['key' => 'processor', 'label' => 'Processor', 'type' => 'text', 'required' => true],
-                    ['key' => 'ram', 'label' => 'RAM', 'type' => 'select', 'required' => true, 'options' => ['8GB', '16GB', '32GB']],
-                    ['key' => 'storage_gb', 'label' => 'Storage (GB)', 'type' => 'number', 'required' => false],
-                ]],
-            ],
-            [
-                'id' => self::CAT_NETWORKING,
-                'name' => 'Networking',
-                'description' => 'Routers, switches, and access points.',
-                'default_loan_days' => 30,
-                'custom_fields' => ['fields' => [
-                    ['key' => 'mac_address', 'label' => 'MAC Address', 'type' => 'text', 'required' => true],
-                    ['key' => 'ports', 'label' => 'Port count', 'type' => 'number', 'required' => false],
-                    ['key' => 'poe', 'label' => 'PoE capable', 'type' => 'boolean', 'required' => false],
-                ]],
-            ],
-            [
-                'id' => self::CAT_DESKTOPS,
-                'name' => 'Desktops',
-                'description' => 'Desktop sets — system unit plus monitor, each serialised.',
-                'default_loan_days' => 30,
-                // One asset, two serialised parts.
-                'requires_monitor_serial' => true,
-                'custom_fields' => ['fields' => [
-                    ['key' => 'processor', 'label' => 'Processor', 'type' => 'text', 'required' => true],
-                    ['key' => 'ram', 'label' => 'RAM', 'type' => 'select', 'required' => true, 'options' => ['8GB', '16GB', '32GB']],
-                    ['key' => 'monitor_size', 'label' => 'Monitor size', 'type' => 'text', 'required' => false],
-                ]],
-            ],
-            [
-                'id' => self::CAT_PERIPHERALS,
-                'name' => 'Peripherals',
-                'description' => 'Projectors, monitors, and accessories.',
-                'default_loan_days' => 7,
-                'custom_fields' => ['fields' => [
-                    ['key' => 'connector', 'label' => 'Connector', 'type' => 'select', 'required' => false, 'options' => ['HDMI', 'VGA', 'USB-C']],
-                ]],
-            ],
-        ];
-
-        foreach ($categories as $category) {
-            Category::updateOrCreate(['id' => $category['id']], $category);
-        }
+        $ppd = $this->office('XI-FO-PPD');
+        $ict = $this->office('XI-FO-PPD-ICT');
+        $ord = $this->office('XI-FO-ORD');
+        $smu = $this->office('XI-FO-SMU');
 
         $equipment = [
             [
@@ -90,7 +38,7 @@ class InventorySeeder extends Seeder
                 'property_number' => '2026-11-LT-0001',
                 'date_acquired' => '2026-02-14',
                 'serial_number' => 'PF3ZK9QA',
-                'category_id' => self::CAT_LAPTOPS,
+                'category_id' => CategorySeeder::LAPTOPS,
                 'model_name' => 'ThinkPad T14 Gen 4',
                 'brand' => 'Lenovo',
                 'location' => 'ICT Storeroom / Shelf A',
@@ -111,7 +59,7 @@ class InventorySeeder extends Seeder
                 'property_number' => '2026-11-LT-0002',
                 'date_acquired' => '2026-02-14',
                 'serial_number' => 'PF3ZK9QB',
-                'category_id' => self::CAT_LAPTOPS,
+                'category_id' => CategorySeeder::LAPTOPS,
                 'model_name' => 'Latitude 5440',
                 'brand' => 'Dell',
                 'location' => 'ICT Storeroom / Shelf A',
@@ -128,7 +76,7 @@ class InventorySeeder extends Seeder
                 'property_number' => '2025-11-NW-0001',
                 'date_acquired' => '2025-09-30',
                 'serial_number' => 'FGL2249L0AB',
-                'category_id' => self::CAT_NETWORKING,
+                'category_id' => CategorySeeder::NETWORKING,
                 'model_name' => 'Catalyst 2960-X',
                 'brand' => 'Cisco',
                 'location' => 'Server Room / Rack B',
@@ -146,7 +94,7 @@ class InventorySeeder extends Seeder
                 'date_acquired' => '2026-01-20',
                 'serial_number' => 'MXL3421ABC',
                 'monitor_serial_number' => 'CNC4210XYZ',
-                'category_id' => self::CAT_DESKTOPS,
+                'category_id' => CategorySeeder::DESKTOPS,
                 'model_name' => 'OptiPlex 7010 + P2422H',
                 'brand' => 'Dell',
                 'location' => 'ICT Office / Workstation 3',
@@ -167,7 +115,7 @@ class InventorySeeder extends Seeder
                 'property_number' => '2024-11-PR-0001',
                 'date_acquired' => '2024-06-05',
                 'serial_number' => null,
-                'category_id' => self::CAT_PERIPHERALS,
+                'category_id' => CategorySeeder::PERIPHERALS,
                 'model_name' => 'EB-X51 Projector',
                 'brand' => 'Epson',
                 'location' => 'Media Room',
@@ -184,10 +132,24 @@ class InventorySeeder extends Seeder
             Equipment::updateOrCreate(['id' => $item['id']], $item);
         }
 
-        $this->command?->info(sprintf(
-            'Seeded %d categories and %d equipment items.',
-            count($categories),
-            count($equipment),
-        ));
+        $this->command?->info(sprintf('Seeded %d equipment items.', count($equipment)));
+    }
+
+    /**
+     * An office id from its code — the register's stable business key, unlike
+     * the name, which gets re-worded.
+     */
+    private function office(string $code): string
+    {
+        $id = Office::where('code', $code)->value('id');
+
+        if ($id === null) {
+            throw new RuntimeException(
+                "Office \"{$code}\" is not in the register, so the sample equipment ".
+                'cannot be filed against it. Run OfficeSeeder first.'
+            );
+        }
+
+        return $id;
     }
 }
