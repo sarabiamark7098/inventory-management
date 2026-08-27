@@ -1,11 +1,11 @@
 # CLAUDE.md - System Specification & Build Instructions
 
 ## Project Overview
-This repository contains the **ICT Equipment & Borrowing Management System**, a local-first, offline-capable hybrid web application designed for tracking ICT hardware, managing categorical taxonomies, and handling borrowing/return workflows with automated bidirectional background synchronization.
+This repository contains the **ICT Equipment & Borrowing Management System**, an online web application for tracking ICT hardware, managing categorical taxonomies, and handling borrowing/return workflows. The client is a thin, connected front end: it requires a live connection to the API and stores nothing on the device.
 
 ---
 
-## Architecture Strategy: Local-First Hybrid Model
+## Architecture Strategy: Connected Client + REST API
 
 The system is delivered as **two independent projects** in this repository:
 
@@ -16,19 +16,18 @@ inventory-management/
 ```
 
 They share no build pipeline and deploy separately. Their only contract is the
-HTTP sync protocol below, plus the status vocabulary duplicated in
+REST API below, plus the status vocabulary duplicated in
 `api/app/Domain/InventoryStatus.php` and `web/src/domain/constants.js`.
 
 ```
 +-----------------------------------------------------------------------+
 |                    UI/UX Project  (web/ :5173)                        |
 |  +---------------------------+       +------------------------------+ |
-|  | Vue 3 + PrimeVue + Pinia  | <---> | Local Database (Dexie/IndexedDB)|
+|  | Vue 3 + PrimeVue + Pinia  | <---> | In-memory working copy       | |
 |  +---------------------------+       +--------------+---------------+ |
+|                                                     |                 |
+|                        Connection gate: no connection, no application |
 +-----------------------------------------------------|-----------------+
-                                                      |
-                                          Background Sync Engine
-                                          (Pinia store + outbox queue)
                                                       |
                                             CORS / HTTP JSON
                                                       v
@@ -43,11 +42,9 @@ HTTP sync protocol below, plus the status vocabulary duplicated in
 ### Core Stack
 - **Frontend Framework:** Vue 3 (Composition API, `<script setup>`) built with Vite
 - **UI Component Library:** PrimeVue 4 (Aura theme, MIT-licensed line) + PrimeIcons
-- **Client State:** Pinia (`inventory` store for data, `sync` store for the engine)
-- **Local Client Store:** Dexie / IndexedDB (for zero-latency offline read/write operations)
+- **Client State:** Pinia (`inventory` store for data, `connection` store for reachability)
 - **Backend API:** Laravel (PHP 8.4) REST route handlers
 - **Central Storage:** MySQL 8
-- **Synchronization Engine:** Custom Outbox Queue with HTTP Pull/Push REST
 
 ---
 
@@ -69,11 +66,12 @@ HTTP sync protocol below, plus the status vocabulary duplicated in
 - **US-2.1:** As an Inventory Manager, register new equipment with key attributes (Serial Number, Asset Tag, Category, Status, Location, Condition, Custom Specs).
 - **US-2.2:** As an Inventory Manager, generate, print, and scan QR codes/barcodes for fast device audits and lookups.
 - **US-2.3:** As an Inventory Manager, manage equipment status state transitions: `AVAILABLE`, `BORROWED`, `ISSUED`, `MAINTENANCE`, `DECOMMISSIONED`, `LOST`. `ISSUED` marks an asset permanently handed to a named user on a PAR, which takes it out of the loan pool entirely — unlike `BORROWED`, which is temporary.
-- **US-2.4:** As an Inventory Manager, filter, search, and export equipment lists offline.
+- **US-2.4:** As an Inventory Manager, filter, search, and export equipment lists without a round-trip per keystroke.
 - **US-2.5:** As a Property Officer, record the accountability trail for each asset — Property Number, Date Acquired, Division, Province and the officer the PAR is issued to (all required), plus an optional Section and Sub-PAR holder for onward reassignment.
 - **US-2.6:** As an Inventory Manager, record who is actually using an asset (name, position, Active Directory account, AnyDesk number) separately from who is accountable for it on the PAR.
 - **US-2.7:** As an Inventory Manager, flag a category as recording two serial numbers, so a desktop set captures both the system unit and the monitor as one asset.
 - **US-2.8:** As an Inventory Manager, add free-text remarks to an asset for anything the structured fields have no column for — defect history, transfer notes, why a unit is set aside.
+- **US-2.9:** As an Inventory Manager, review everything that has been removed in an Archive screen and restore an asset archived by mistake; as a System Admin, permanently destroy an archived asset that has been disposed of, leaving an audit snapshot behind.
 
 ### Epic 3: Borrowing & Return Management
 - **US-3.1:** As an Inventory Manager, record a loan request on a borrower's behalf, specifying required dates and intended usage. Borrowers are named on the transaction and do not hold accounts.
@@ -81,11 +79,11 @@ HTTP sync protocol below, plus the status vocabulary duplicated in
 - **US-3.3:** As an Inventory Manager, process returns, record item condition changes, and log damages or missing accessories.
 - **US-3.4:** As a System Admin, trigger automated overdue notifications and track borrowing history logs.
 
-### Epic 4: Hybrid Offline Operations & Auto-Syncing
-- **US-4.1:** As a User, perform all CRUD operations locally without an active internet connection.
-- **US-4.2:** As a User, automatically synchronize local offline changes with the central database upon network restoration.
-- **US-4.3:** As a System Admin, handle data conflicts via deterministically governed policies (Server-Wins with Local Override flags for physical stock states).
-- **US-4.4:** As a User, view a live visual status badge (`Online`, `Offline`, `Syncing`, `Sync Pending [X]`).
+### Epic 4: Connected Operation
+- **US-4.1:** As a User, always see current data, because every screen reads from the central database rather than a copy.
+- **US-4.2:** As a User, be told plainly when the server is unreachable instead of being allowed to type into a form that cannot be saved.
+- **US-4.3:** As a System Admin, have concurrent edits from two operators adjudicated deterministically (Last-Write-Wins on attributes; the Status Lock Rule on physical stock states).
+- **US-4.4:** As a User, view a live connection badge (`Online`, `Reconnecting`, `Offline`) and refresh on demand.
 
 ---
 
@@ -197,7 +195,8 @@ CREATE TABLE borrowing_transactions (
     FOREIGN KEY (equipment_id) REFERENCES equipment(id) ON DELETE SET NULL
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- Sync Queue Log Table
+-- Change Log: an append-only audit trail of every write, including the
+-- PURGE snapshot that outlives the row it describes.
 CREATE TABLE sync_changes (
     id CHAR(36) PRIMARY KEY,
     entity_type VARCHAR(50) NOT NULL,
@@ -214,25 +213,49 @@ CREATE TABLE sync_changes (
 
 ---
 
-## Offline Synchronization Protocol & Conflict Strategy
+## Connection Model & Conflict Strategy
 
-1. **Local Outbox Queue:** Mutations write to Dexie/IndexedDB and queue an entry in
-   the local `sync_queue` table — both inside one Dexie transaction, so a change
-   can never be applied locally without also being scheduled for the server:
-   `{ id, table, action, docId, payload, clientTimestamp, status, attempts, lastError }`.
-2. **Push Phase (`POST /api/sync/push`):** Uploads local mutations.
-3. **Pull Phase (`GET /api/sync/pull?last_synced_at=TIMESTAMP`):** Downloads server updates changed since `last_synced_at`.
-4. **Conflict Rules:**
-   - **Loan Pool Rule:** Equipment in `ISSUED`, `MAINTENANCE`, `DECOMMISSIONED` or `LOST` cannot be booked at all. Enforced server-side on new loans, because an offline client may hold a stale status.
-   - **Status Lock Rule:** Physical loan states (`BORROWED`, `ISSUED`) strictly enforce Server Validation. If dual checkout occurs offline, server flags the transaction as `CONFLICT_PENDING_REVIEW`.
+1. **No local persistence.** The Pinia store holds a working copy in memory for
+   rendering and filtering; it is dropped on sign-out and on reload. Nothing
+   about the inventory is written to the device.
+2. **Reads:** `GET /api/{offices,categories,equipment,borrowings}` on sign-in,
+   on reconnect, and on demand.
+3. **Writes:** `POST /api/{table}`, `PUT /api/{table}/{id}`,
+   `DELETE /api/{table}/{id}`. Each returns the stored row, which replaces the
+   working copy's version — the server normalises input and reconciles equipment
+   status from loan activity, so the response is often not what was sent.
+4. **The connection gate.** `web/src/stores/connection.js` treats a real response
+   from `/api/health` as the source of truth, not `navigator.onLine`, which
+   reports only that a network interface is up. When the API is unreachable the
+   whole application is replaced by a blocking screen.
+5. **Conflict Rules** — still needed with no offline client, because two
+   operators on two browsers can submit overlapping loans within the same second:
+   - **Loan Pool Rule:** Equipment in `ISSUED`, `MAINTENANCE`, `DECOMMISSIONED` or `LOST` cannot be booked at all. Enforced server-side, because a client's working copy can be seconds stale.
+   - **Status Lock Rule:** Physical loan states (`BORROWED`, `ISSUED`) are validated server-side. On a dual checkout the loser is stored and flagged `CONFLICT_PENDING_REVIEW` rather than dropped - someone physically has the device either way. The API answers `409` with the stored row attached.
    - **Attribute Updates:** Managed via Last-Write-Wins (LWW) utilizing UTC timestamps.
 
 ---
 
-5. **Failure handling:** transient failures (offline, 5xx, unreachable database)
-   return outbox entries to `PENDING` for automatic retry; only a server that
-   refuses a change on its merits (4xx / `REJECTED`) marks it `FAILED` for a
-   human. Orphaned `IN_FLIGHT` entries are released after 60s.
+## The Archive
+
+Deleting anywhere in the system is a **soft delete**: `deleted_at` is set and
+the row stays, so the loan history and property trail it belongs to keep
+reading correctly.
+
+- `GET /api/archive` returns every soft-deleted record across all four tables,
+  with each asset's loan count and active-loan count.
+- `POST /api/archive/equipment/{id}/restore` puts an asset back. Open to anyone
+  who may write inventory - it undoes a mistake. An asset archived mid-loan
+  comes back `AVAILABLE` if that loan has since closed.
+- `DELETE /api/archive/equipment/{id}` destroys the row permanently.
+  **Admin-only**, refused while the asset is not archived or is still out on an
+  active loan, and it writes a full snapshot to `sync_changes` as operation
+  `PURGE` first - after the delete that snapshot is the only remaining evidence
+  the asset existed.
+
+A restore can never collide on identifiers: MySQL's unique indexes cover
+soft-deleted rows, so an archived asset keeps its asset tag, property number
+and serials reserved for as long as it sits there.
 
 ---
 
@@ -282,7 +305,8 @@ boundary.
   ad-hoc module globals.
 - Authorization is enforced server-side; treat client-side role checks purely as
   user experience.
-- Every local write goes through `web/src/stores/inventory.js` so the document
-  and its outbox entry are always created together.
+- Every read and write on the client goes through `web/src/stores/inventory.js`;
+  components never call the API directly.
 - Writes on the API always go through `App\Services\SyncService`, including the
-  REST controllers, so the conflict rules have exactly one implementation.
+  REST controllers, so the conflict rules have exactly one implementation. The
+  name predates the removal of offline mode; it is now simply the write path.

@@ -280,9 +280,9 @@ class AuthTest extends TestCase
 
     public function test_protected_routes_require_a_token(): void
     {
-        $this->getJson('/api/sync/pull')->assertStatus(401);
         $this->getJson('/api/equipment')->assertStatus(401);
-        $this->postJson('/api/sync/push', ['clientId' => 'x', 'changes' => []])->assertStatus(401);
+        $this->getJson('/api/archive')->assertStatus(401);
+        $this->postJson('/api/equipment', [])->assertStatus(401);
         $this->getJson('/api/users')->assertStatus(401);
     }
 
@@ -292,7 +292,7 @@ class AuthTest extends TestCase
         // API does not have — that threw from inside the auth middleware and
         // surfaced as a 500. A browser opened straight at an API URL, or a
         // monitoring probe, sends no Accept header and hit exactly that path.
-        $this->get('/api/sync/pull', ['Accept' => '*/*'])
+        $this->get('/api/equipment', ['Accept' => '*/*'])
             ->assertStatus(401)
             ->assertJsonPath('error', 'Authentication required.');
     }
@@ -362,8 +362,12 @@ class AuthTest extends TestCase
             $this->actingAs($user, 'sanctum');
 
             $this->getJson('/api/equipment')->assertOk();
-            $this->getJson('/api/sync/pull')->assertOk();
-            $this->postJson('/api/sync/push', ['clientId' => 'x', 'changes' => []])->assertOk();
+            $this->getJson('/api/categories')->assertOk();
+            $this->postJson('/api/categories', [
+                'name' => 'Written by '.$role,
+                'customFields' => ['fields' => []],
+                'defaultLoanDays' => 7,
+            ])->assertStatus(201);
         }
     }
 

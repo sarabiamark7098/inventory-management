@@ -51,7 +51,7 @@ const divisionOptions = computed(() =>
   inventory.divisions.map((d) => ({ label: d.name, value: d.id })),
 )
 
-/** All filtering runs against the local store, so it works offline (US-2.4). */
+/** Filtering runs over the loaded register, so it costs no round-trip (US-2.4). */
 const filtered = computed(() => {
   const term = search.value.trim().toLowerCase()
   return inventory.equipment.filter((item) => {
@@ -141,19 +141,19 @@ async function onScan(code) {
 
 function confirmDelete(item) {
   confirm.require({
-    header: 'Delete equipment',
-    message: `Soft-delete ${item.assetTag} (${item.modelName})? The removal syncs on the next cycle.`,
+    header: 'Archive Equipment',
+    message: `Are you sure you want to archive ${item.assetTag} (${item.modelName})?`,
     icon: 'pi pi-exclamation-triangle',
     rejectProps: { label: 'Cancel', severity: 'secondary', outlined: true },
-    acceptProps: { label: 'Delete', severity: 'danger' },
+    acceptProps: { label: 'Archive', severity: 'danger' },
     accept: async () => {
       await inventory.deleteEquipment(item.id)
-      toast.add({ severity: 'success', summary: 'Equipment deleted', life: 2000 })
+      toast.add({ severity: 'success', summary: 'Equipment archived', life: 2000 })
     },
   })
 }
 
-/** Offline CSV export — no server round-trip (US-2.4). */
+/** CSV export, built in the browser from what is on screen (US-2.4). */
 function exportCsv() {
   const columns = [
     ['Asset Tag', (r) => r.assetTag],
@@ -211,8 +211,8 @@ function exportCsv() {
       <div>
         <h1>Equipment</h1>
         <p>
-          Register, audit, and track ICT hardware. Search and export work fully
-          offline against the local store.
+          Register, audit, and track ICT hardware. Search, filter, and export
+          the register.
         </p>
       </div>
       <div class="toolbar-actions">

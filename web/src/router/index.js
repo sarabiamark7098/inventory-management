@@ -40,6 +40,12 @@ const routes = [
     meta: { title: 'Borrowing' },
   },
   {
+    path: '/archive',
+    name: 'archive',
+    component: () => import('@/views/ArchiveView.vue'),
+    meta: { title: 'Archive' },
+  },
+  {
     path: '/accounts',
     name: 'accounts',
     component: () => import('@/views/AccountsView.vue'),

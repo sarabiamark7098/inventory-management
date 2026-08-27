@@ -16,11 +16,16 @@ use Illuminate\Support\Str;
 use Throwable;
 
 /**
- * Bidirectional sync between offline clients and the central database.
+ * The single write path into the inventory.
  *
- * Push applies queued client mutations one at a time, each in its own
- * transaction, and returns a per-change verdict. Pull streams back everything
- * changed since the client's last checkpoint.
+ * Every mutation — from the REST controllers or from a console command —
+ * arrives here as a batch of changes, each applied in its own transaction with
+ * a per-change verdict, and each recorded in the `sync_changes` audit log.
+ *
+ * The conflict rules survived the removal of offline mode, because they were
+ * never really about offline: two operators on two browsers can still submit
+ * overlapping loans for the same asset within the same second. Last-Write-Wins
+ * on `updatedAt` and the Status Lock Rule adjudicate that, and always did.
  */
 class SyncService
 {
@@ -63,27 +68,126 @@ class SyncService
         ];
     }
 
-    public function pull(?CarbonImmutable $since): array
+    /**
+     * Brings an archived asset back into the live register (US-2.9).
+     *
+     * The mirror of a soft delete, and the reason purging is a separate,
+     * admin-only action: archiving is meant to be reversible, so an operator
+     * who removes the wrong asset has a way back that does not involve
+     * re-typing a property record.
+     *
+     * The identifiers are re-checked first. An asset can sit in the archive for
+     * months, and nothing stopped someone registering a new machine under the
+     * same asset tag or serial in the meantime — restoring blindly would hit a
+     * unique index and surface as a 500 with no explanation.
+     *
+     * @return array{status: string, message?: string, data?: array}
+     */
+    public function restoreEquipment(string $id, string $actor): array
     {
-        // Captured before the reads so a row written mid-query is re-sent on the
-        // next pull rather than silently skipped.
-        $serverTime = now()->toIso8601ZuluString('millisecond');
+        return DB::transaction(function () use ($id, $actor) {
+            $asset = Equipment::query()->lockForUpdate()->find($id);
 
-        $scope = fn ($query) => $since
-            ? $query->where('updated_at', '>', $since)
-            : $query;
+            if (! $asset) {
+                return ['status' => 'NOT_FOUND', 'message' => 'That asset no longer exists.'];
+            }
 
-        return [
-            'serverTime' => $serverTime,
-            'offices' => $scope(Office::query()->orderBy('updated_at'))
-                ->get()->map->toSyncArray()->all(),
-            'categories' => $scope(Category::query()->orderBy('updated_at'))
-                ->get()->map->toSyncArray()->all(),
-            'equipment' => $scope(Equipment::query()->orderBy('updated_at'))
-                ->get()->map->toSyncArray()->all(),
-            'borrowings' => $scope(BorrowingTransaction::query()->orderBy('updated_at'))
-                ->get()->map->toSyncArray()->all(),
-        ];
+            if ($asset->deleted_at === null) {
+                return [
+                    'status' => 'REJECTED',
+                    'message' => "{$asset->asset_tag} is not archived.",
+                ];
+            }
+
+            $now = Carbon::now();
+
+            $asset->forceFill(['deleted_at' => null, 'updated_at' => $now])->save();
+
+            // Archived while on loan, and the loan has since been closed: the
+            // stored status would otherwise say BORROWED for a device sitting
+            // on the shelf.
+            $this->reconcileEquipmentStatus($asset->id, $now);
+
+            $fresh = $asset->fresh();
+
+            SyncChange::create([
+                'entity_type' => 'equipment',
+                'entity_id' => $id,
+                'operation' => 'RESTORE',
+                'data' => $fresh->toSyncArray(),
+                'client_id' => $actor,
+                'client_timestamp' => $now,
+            ]);
+
+            return ['status' => 'RESTORED', 'data' => $fresh->toSyncArray()];
+        });
+    }
+
+    /**
+     * Permanently destroys an archived asset (US-2.9).
+     *
+     * Soft delete hides a record; this erases it. Refused while the asset is
+     * not archived, or while a loan still physically holds it — purging then
+     * would leave a borrower holding a device the system has no record of.
+     *
+     * A snapshot of the destroyed row is written to the audit log first: after
+     * this returns, that log entry is the only remaining evidence the asset
+     * ever existed, which is exactly what a property audit will ask for.
+     *
+     * @return array{status: string, message?: string, assetTag?: string, detachedLoans?: int}
+     */
+    public function purgeEquipment(string $id, string $actor): array
+    {
+        return DB::transaction(function () use ($id, $actor) {
+            $asset = Equipment::query()->lockForUpdate()->find($id);
+
+            if (! $asset) {
+                return ['status' => 'NOT_FOUND', 'message' => 'That asset no longer exists.'];
+            }
+
+            if ($asset->deleted_at === null) {
+                return [
+                    'status' => 'REJECTED',
+                    'message' => "{$asset->asset_tag} is not archived. Archive it first.",
+                ];
+            }
+
+            $active = BorrowingTransaction::query()
+                ->where('equipment_id', $id)
+                ->whereNull('deleted_at')
+                ->active()
+                ->count();
+
+            if ($active > 0) {
+                return [
+                    'status' => 'REJECTED',
+                    'message' => "{$asset->asset_tag} is still out on an active loan and cannot be destroyed.",
+                ];
+            }
+
+            // The FK is ON DELETE SET NULL, so the loan rows survive the purge
+            // with a dangling reference. Counting them first is what lets the
+            // confirmation dialog say how much history is about to come loose.
+            $detached = BorrowingTransaction::query()->where('equipment_id', $id)->count();
+
+            SyncChange::create([
+                'entity_type' => 'equipment',
+                'entity_id' => $id,
+                'operation' => 'PURGE',
+                'data' => $asset->toSyncArray(),
+                'client_id' => $actor,
+                'client_timestamp' => Carbon::now(),
+            ]);
+
+            $assetTag = $asset->asset_tag;
+            $asset->delete();
+
+            return [
+                'status' => 'PURGED',
+                'assetTag' => $assetTag,
+                'detachedLoans' => $detached,
+            ];
+        });
     }
 
     /* ------------------------------------------------------------------ */

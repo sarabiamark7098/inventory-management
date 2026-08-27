@@ -26,7 +26,7 @@ HTTPS, or `localhost`. `http://172.26.120.49` is neither.
 
 **Consequence:** the QR/barcode scanner will silently never start. Nothing
 crashes; the camera just stays off and the app falls back to its text input.
-Everything else — registration, checkout, returns, sync, offline — works
+Everything else — registration, checkout, returns, the archive — works
 normally, and USB barcode scanners still work because they type the code and
 press Enter.
 
@@ -353,7 +353,7 @@ Expect `{"status":"ok",...}`. Then check the API refuses anonymous access
 properly — a 401, **not** a 500:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://172.26.120.49/inventory_management_api/api/sync/pull
+curl -s -o /dev/null -w '%{http_code}\n' http://172.26.120.49/inventory_management_api/api/equipment
 ```
 
 Confirm the secrets are not published. This must return `404` — if it returns

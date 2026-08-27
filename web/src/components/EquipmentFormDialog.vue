@@ -176,7 +176,7 @@ async function save() {
     toast.add({
       severity: 'success',
       summary: props.equipment ? 'Equipment updated' : 'Equipment registered',
-      detail: 'Saved locally and queued for sync.',
+      detail: 'Saved.',
       life: 2500,
     })
   } catch (err) {

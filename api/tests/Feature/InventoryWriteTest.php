@@ -9,12 +9,23 @@ use App\Models\Equipment;
 use App\Models\Office;
 use App\Models\SyncChange;
 use App\Models\User;
+use App\Services\SyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
-/** End-to-end coverage of /api/sync/push and /api/sync/pull against MySQL. */
-class SyncTest extends TestCase
+/**
+ * Coverage of the inventory write rules against MySQL.
+ *
+ * These exercise SyncService, the single write path, rather than any one
+ * endpoint: the REST controllers are a thin shell over it, and the rules worth
+ * protecting - Last-Write-Wins, the Status Lock Rule, the Loan Pool Rule, the
+ * accountability requirements - all live in the service.
+ */
+class InventoryWriteTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -30,8 +41,8 @@ class SyncTest extends TestCase
     {
         parent::setUp();
 
-        // Sync is an authenticated, inventory-writing operation; these tests
-        // exercise the engine, so they run as a manager.
+        // Writing inventory is an authenticated operation, and the REST reads
+        // asserted here need a token too, so these run as a manager.
         $this->actingAs(User::create([
             'name' => 'Sync Tester',
             'email' => 'sync@ict.test',
@@ -92,12 +103,40 @@ class SyncTest extends TestCase
         ];
     }
 
-    private function push(array $changes, string $clientId = 'test-client')
+    /**
+     * Applies a batch of changes and wraps the verdict in a TestResponse.
+     *
+     * The batch used to arrive over HTTP from an offline client's outbox. That
+     * endpoint is gone, but batches are still the service's unit of work - a
+     * checkout writes the loan and the asset's new status together - so the
+     * tests keep driving it that way rather than through single-row REST calls,
+     * which could not express an overlap between two loans in one submission.
+     */
+    private function push(array $changes, string $clientId = 'test-client'): TestResponse
     {
-        return $this->postJson('/api/sync/push', [
-            'clientId' => $clientId,
-            'changes' => $changes,
+        $payload = ['clientId' => $clientId, 'changes' => $changes];
+
+        $validator = Validator::make($payload, [
+            'clientId' => ['required', 'string', 'max:100'],
+            'changes' => ['present', 'array', 'max:500'],
+            'changes.*.id' => ['required', 'string', 'max:100'],
+            'changes.*.table' => ['required', 'string', 'in:offices,categories,equipment,borrowings'],
+            'changes.*.action' => ['required', 'string', 'in:INSERT,UPDATE,DELETE'],
+            'changes.*.docId' => ['required', 'string', 'uuid'],
+            'changes.*.payload' => ['present', 'array'],
+            'changes.*.clientTimestamp' => ['required', 'date'],
         ]);
+
+        if ($validator->fails()) {
+            return $this->respond(['errors' => $validator->errors()->toArray()], 422);
+        }
+
+        return $this->respond(app(SyncService::class)->push($payload), 200);
+    }
+
+    private function respond(array $body, int $status): TestResponse
+    {
+        return TestResponse::fromBaseResponse(new JsonResponse($body, $status));
     }
 
     private function loan(string $id, string $createdAt, string $issue, string $due, string $status = 'ISSUED'): array
@@ -121,38 +160,24 @@ class SyncTest extends TestCase
 
     /* ----------------------------- basics ---------------------------- */
 
-    public function test_pull_returns_the_full_dataset_when_no_checkpoint_is_given(): void
+    public function test_the_rest_reads_return_the_current_dataset(): void
     {
-        $response = $this->getJson('/api/sync/pull')->assertOk();
-
-        $this->assertCount(1, $response->json('categories'));
-        $this->assertCount(1, $response->json('equipment'));
-        $this->assertSame([], $response->json('borrowings'));
-        $this->assertNotNull($response->json('serverTime'));
+        $this->getJson('/api/categories')->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/equipment')->assertOk()->assertJsonCount(1, 'data');
+        $this->getJson('/api/borrowings')->assertOk()->assertJsonCount(0, 'data');
     }
 
-    public function test_pull_only_returns_rows_changed_since_the_checkpoint(): void
+    public function test_the_batch_sync_endpoints_are_gone(): void
     {
-        $checkpoint = now()->addSecond()->toIso8601ZuluString('millisecond');
-
-        $this->getJson('/api/sync/pull?last_synced_at='.urlencode($checkpoint))
-            ->assertOk()
-            ->assertJsonCount(0, 'categories')
-            ->assertJsonCount(0, 'equipment');
-    }
-
-    public function test_pull_rejects_a_malformed_checkpoint(): void
-    {
-        $this->getJson('/api/sync/pull?last_synced_at=not-a-date')
-            ->assertStatus(400)
-            ->assertJsonStructure(['error']);
+        // Removed with offline mode. Asserted so they cannot creep back in as
+        // a batch write surface nothing owns any more.
+        $this->getJson('/api/sync/pull')->assertNotFound();
+        $this->postJson('/api/sync/push', ['clientId' => 'x', 'changes' => []])
+            ->assertNotFound();
     }
 
     public function test_push_validates_the_payload(): void
     {
-        $this->postJson('/api/sync/push', ['clientId' => 'x'])
-            ->assertStatus(422);
-
         $this->push([$this->change('nope', 'INSERT', (string) Str::uuid(), [])])
             ->assertStatus(422);
 
@@ -183,7 +208,7 @@ class SyncTest extends TestCase
         $this->assertDatabaseHas('sync_changes', ['entity_id' => $id, 'operation' => 'INSERT']);
     }
 
-    public function test_soft_delete_syncs_and_is_included_in_pull(): void
+    public function test_soft_delete_keeps_the_row_and_marks_it_archived(): void
     {
         $now = now()->toIso8601ZuluString('millisecond');
 
@@ -193,7 +218,7 @@ class SyncTest extends TestCase
             'updatedAt' => $now,
         ])])->assertOk()->assertJsonPath('results.0.status', 'APPLIED');
 
-        $categories = $this->getJson('/api/sync/pull')->json('categories');
+        $categories = $this->getJson('/api/categories?with_deleted=1')->json('data');
         $this->assertNotNull($categories[0]['deletedAt']);
     }
 
@@ -243,7 +268,7 @@ class SyncTest extends TestCase
         ], $overrides);
     }
 
-    public function test_accountability_fields_round_trip_through_sync(): void
+    public function test_accountability_fields_round_trip_through_a_write(): void
     {
         $id = (string) Str::uuid();
 
@@ -268,7 +293,7 @@ class SyncTest extends TestCase
         ]);
 
         // And it must come back down on the next pull.
-        $pulled = collect($this->getJson('/api/sync/pull')->json('equipment'))
+        $pulled = collect($this->getJson('/api/equipment?with_deleted=1')->json('data'))
             ->firstWhere('id', $id);
         $this->assertSame($this->divisionId, $pulled['divisionId']);
         $this->assertSame($this->sectionId, $pulled['sectionId']);
@@ -351,7 +376,7 @@ class SyncTest extends TestCase
         $this->assertSame('2026-03-15', Equipment::find($id)->date_acquired->toDateString());
         $this->assertSame(
             '2026-03-15',
-            collect($this->getJson('/api/sync/pull')->json('equipment'))
+            collect($this->getJson('/api/equipment?with_deleted=1')->json('data'))
                 ->firstWhere('id', $id)['dateAcquired'],
         );
     }
@@ -541,9 +566,9 @@ class SyncTest extends TestCase
             ->assertJsonPath('results.0.status', 'REJECTED');
     }
 
-    public function test_offices_are_included_in_the_pull(): void
+    public function test_offices_are_readable_through_the_rest_endpoint(): void
     {
-        $offices = $this->getJson('/api/sync/pull')->assertOk()->json('offices');
+        $offices = $this->getJson('/api/offices')->assertOk()->json('data');
 
         $this->assertCount(2, $offices);
         $this->assertContains(true, array_column($offices, 'isDivision'));
@@ -622,7 +647,7 @@ class SyncTest extends TestCase
 
     /* ------------------------------ remarks ------------------------------ */
 
-    public function test_remarks_round_trip_through_sync(): void
+    public function test_remarks_round_trip_through_a_write(): void
     {
         $id = (string) Str::uuid();
         $note = "Screen flickers under load. Swapped the cable 2026-03-02; monitor still suspect.";
@@ -636,7 +661,7 @@ class SyncTest extends TestCase
         $this->assertSame($note, Equipment::find($id)->remarks);
 
         // And it must come back down on the next pull.
-        $pulled = collect($this->getJson('/api/sync/pull')->json('equipment'))
+        $pulled = collect($this->getJson('/api/equipment?with_deleted=1')->json('data'))
             ->firstWhere('id', $id);
         $this->assertSame($note, $pulled['remarks']);
     }
@@ -690,7 +715,7 @@ class SyncTest extends TestCase
 
     /* ------------------ deployment + multi-part serials ------------------ */
 
-    public function test_deployment_details_round_trip_through_sync(): void
+    public function test_deployment_details_round_trip_through_a_write(): void
     {
         $id = (string) Str::uuid();
 
@@ -858,7 +883,7 @@ class SyncTest extends TestCase
             ->assertJsonPath('results.0.status', 'REJECTED');
     }
 
-    public function test_the_monitor_serial_flag_syncs_on_the_category(): void
+    public function test_the_monitor_serial_flag_persists_on_the_category(): void
     {
         $id = (string) Str::uuid();
 
@@ -1057,7 +1082,7 @@ class SyncTest extends TestCase
             ->assertJsonPath('results.0.status', 'APPLIED');
     }
 
-    public function test_returning_a_loan_still_syncs_after_the_asset_is_withdrawn(): void
+    public function test_returning_a_loan_still_applies_after_the_asset_is_withdrawn(): void
     {
         $id = (string) Str::uuid();
         $this->push([$this->loan($id, $this->at('+1 hour'), $this->at('+30 days'), $this->at('+39 days'))]);

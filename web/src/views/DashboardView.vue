@@ -62,8 +62,7 @@ function remainingLabel(tx) {
       <div>
         <h1>Dashboard</h1>
         <p>
-          Live view of the local store. Everything here works without a network
-          connection.
+          Live view of the central inventory, as of the last refresh.
         </p>
       </div>
       <div class="toolbar-actions">

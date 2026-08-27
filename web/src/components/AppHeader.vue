@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 
-import SyncStatusBadge from './SyncStatusBadge.vue'
+import ConnectionBadge from './ConnectionBadge.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -23,6 +23,7 @@ const links = computed(() =>
     { to: '/categories', label: 'Categories', icon: 'pi pi-tags' },
     { to: '/offices', label: 'Offices', icon: 'pi pi-sitemap' },
     { to: '/borrowing', label: 'Borrowing', icon: 'pi pi-arrow-right-arrow-left' },
+    { to: '/archive', label: 'Archive', icon: 'pi pi-inbox' },
     // Account management is admin-only; hide what the API would refuse anyway.
     ...(auth.isAdmin ? [{ to: '/accounts', label: 'Accounts', icon: 'pi pi-users' }] : []),
   ],
@@ -103,7 +104,7 @@ async function saveProfile() {
       </nav>
 
       <div class="app-header__status">
-        <SyncStatusBadge />
+        <ConnectionBadge />
 
         <Button
           class="app-header__user"

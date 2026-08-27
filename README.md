@@ -1,8 +1,8 @@
 # ICT Equipment & Borrowing Management System
 
-Local-first, offline-capable system for tracking ICT hardware, category
-taxonomies, and borrowing/return workflows, with bidirectional background
-synchronization to a central MySQL database.
+System for tracking ICT hardware, category taxonomies, and borrowing/return
+workflows against a central MySQL database. The client is online-only: it holds
+no copy of the inventory and requires a live connection to the API.
 
 The functional specification lives in [CLAUDE.md](CLAUDE.md).
 
@@ -10,7 +10,7 @@ The functional specification lives in [CLAUDE.md](CLAUDE.md).
 
 | Path | Project | Stack | Dev URL |
 | --- | --- | --- | --- |
-| [`web/`](web) | UI/UX | Vue 3, PrimeVue 4, Pinia, Vite, Dexie/IndexedDB | http://localhost:5173 |
+| [`web/`](web) | UI/UX | Vue 3, PrimeVue 4, Pinia, Vite | http://localhost:5173 |
 | [`api/`](api) | API | Laravel 13, PHP 8.4, MySQL 8 | http://localhost:8000 |
 
 They are independent: separate dependency trees, separate builds, separate
@@ -54,9 +54,8 @@ cd web && npm install && npm run dev
 
 Open http://localhost:5173.
 
-The UI keeps working with the API stopped — every screen reads and writes
-IndexedDB. Mutations queue in the outbox and drain automatically once the API is
-reachable again.
+Stop the API and the UI replaces itself with a "No connection" screen until it
+comes back. That is deliberate — see [Connection model](#connection-model).
 
 ## Authentication
 
@@ -197,7 +196,7 @@ instead of the record becoming impossible to save. An update can never blank out
 a PAR holder or division that is already recorded.
 
 Property number, PAR, holder, province, division and section are searchable,
-filterable by province, included in the offline CSV export, and printed on the
+filterable by province, included in the CSV export, and printed on the
 QR labels. The scanner resolves an asset tag, a property number, a serial number
 or a QR payload.
 
@@ -222,10 +221,10 @@ engine judges the dates.
 | `DECOMMISSIONED` | **no** |
 | `LOST` | **no** |
 
-Enforced in the client *and* in `SyncService::applyBorrowing()`, because an
-offline client may not have seen the status change yet — the server is what
-decides. The guard applies to **new** loans only, so returning or correcting an
-existing loan still syncs even after the asset is withdrawn.
+Enforced in the client *and* in `SyncService::applyBorrowing()`, because a
+client's working copy can be seconds stale — the server is what decides. The
+guard applies to **new** loans only, so returning or correcting an existing loan
+still saves even after the asset is withdrawn.
 
 An asset on loan must be returned before it can be issued (`BORROWED → ISSUED`
 is not a legal transition), and reconciliation never overwrites `ISSUED` — it is
@@ -235,31 +234,34 @@ an operator decision, like `MAINTENANCE`.
 > this loan". They are separate vocabularies — `equipment.status` versus
 > `borrowing_transactions.status` — and are never compared to each other.
 
-## How the offline model works
+## Connection model
 
 ```
-Vue component → Pinia inventory store ─┬→ Dexie table   (immediate, reactive re-render)
-                                       └→ sync_queue    (outbox, same transaction)
-                                                │
-                              Pinia sync store (push → pull, every 30s)
-                                                │
-                        POST /api/sync/push  →  Laravel  →  MySQL
-                        GET  /api/sync/pull   ←          ←
+Vue component → Pinia inventory store → REST → Laravel → MySQL
+                        │                                   │
+                 in-memory working copy  ←  stored row  ←───┘
 ```
 
-The sync store runs a cycle on load, when connectivity returns, when the tab
-regains focus, and on a slow poll.
+There is no local database. The store keeps a working copy of the last server
+response so screens can render, sort and filter without a request per keystroke,
+and that copy is dropped on sign-out and on reload. Every write goes to the API
+and the **stored row comes back** — the server trims input, applies defaults and
+reconciles equipment status from loan activity, so echoing the request payload
+would show something subtly different from what was saved.
 
-**Failure handling** distinguishes two cases, which is what the status badge
-reflects:
+**The connection gate.** When the API cannot be reached the entire application
+is replaced by a blocking screen that retries every 5 seconds. A form that looks
+like it saved and did not is worse than one that refuses to open.
 
-- **Transient** (offline, 5xx, unreachable database) → entries return to
-  `PENDING` and retry. Badge stays `Sync pending [X]`.
-- **Rejected** (4xx, or a change the server refused on its merits) → entries go
-  to `FAILED` and wait for a human. Badge turns red; clicking it offers a retry.
+Reachability is decided by an actual response from `/api/health`, not by
+`navigator.onLine` — that flag reports whether a network interface is up, and is
+cheerfully `true` on a captive-portal wifi or when the API host itself is down.
+Ordinary traffic reports in as it goes, so the heartbeat only has to run every
+30 seconds while someone is working.
 
-Orphaned `IN_FLIGHT` entries — a tab closed mid-push — are released back to
-`PENDING` after 60s, so no mutation is ever stranded.
+> **Upgrading from the offline build?** Earlier versions kept a full copy of the
+> inventory in IndexedDB, and it outlived both sign-out and the upgrade. The new
+> build deletes that database once on first load (`web/src/main.js`).
 
 ## Conflict resolution
 
@@ -270,14 +272,35 @@ Orphaned `IN_FLIGHT` entries — a tab closed mid-push — are released back to
 | Overlapping active loans on one asset | **Status Lock Rule** — the loan with the earlier `createdAt` keeps the asset (ties break on id, so every client reaches the same verdict); the loser is flagged `CONFLICT_PENDING_REVIEW` |
 | Equipment availability | Derived server-side from the authoritative loan rows. `MAINTENANCE` / `DECOMMISSIONED` / `LOST` are operator decisions and are never overwritten |
 
-During a pull, documents with unsynced local edits are skipped so offline work
-is not clobbered. The one exception is a server-flagged conflict, which always
-wins so the contested record surfaces immediately.
+These rules outlived offline mode because they were never really about offline:
+two operators on two browsers can still submit overlapping loans for the same
+asset within the same second.
 
-When a document is skipped, the sync checkpoint is **rewound to just before it**
-rather than advanced to the server time. Otherwise the next incremental pull
-would start after that document and the server's version would never be offered
-again — the two copies would silently diverge forever.
+A contested loan comes back as HTTP **409 with the stored row attached** — it is
+not a failed write. The transaction was saved and flagged, because someone
+physically has the device either way; the error message is how the operator
+learns it needs adjudicating.
+
+## The archive
+
+Deleting anything is a **soft delete**: the row stays with `deleted_at` set, so
+the loan history and property trail it belongs to keep reading correctly. The
+**Archive** screen is where those records live.
+
+| Action | Who | Notes |
+| --- | --- | --- |
+| Restore an asset | Anyone who may write inventory | Undoes a mistaken removal. An asset archived mid-loan returns `AVAILABLE` if that loan has since closed |
+| Delete forever | **Admin only** | Erases the row. Refused while a borrower still holds the asset |
+
+Restoring can never collide on identifiers: MySQL's unique indexes cover
+soft-deleted rows, so an archived asset keeps its asset tag, property number and
+serials reserved for as long as it sits there — nothing can have claimed them.
+
+A permanent delete writes a full snapshot of the row to `sync_changes` as
+operation `PURGE` **before** destroying it. After that, the snapshot is the only
+remaining evidence the asset ever existed, which is what a property audit will
+ask for. The loan rows survive too, with their `equipment_id` set to `NULL`, and
+the confirmation dialog says how many will come loose before you agree to it.
 
 ## Tests
 
@@ -285,7 +308,7 @@ again — the two copies would silently diverge forever.
 cd api && php artisan test
 ```
 
-118 tests / 408 assertions covering the loan maths, the conflict engine in both
+138 tests / 462 assertions covering the loan maths, the conflict engine in both
 arrival orders, Last-Write-Wins, equipment reconciliation, request validation,
 the full OTP lifecycle (expiry, reuse, brute force, rate limiting, enumeration
 resistance), the email domain policy, property accountability (PAR required on registration,

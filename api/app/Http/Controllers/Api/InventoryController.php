@@ -13,7 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 /**
- * Conventional REST surface for API consumers that are not the offline client.
+ * The REST surface the client reads and writes through.
  *
  * Writes are deliberately funnelled through SyncService so the Status Lock Rule
  * and Last-Write-Wins live in exactly one place — a direct Eloquent write here
@@ -110,7 +110,7 @@ class InventoryController extends Controller
         ]);
     }
 
-    /** Dashboard counters, computed server-side for non-offline consumers. */
+    /** Dashboard counters, computed server-side rather than summed on the client. */
     public function stats(): JsonResponse
     {
         $byStatus = Equipment::query()
@@ -154,7 +154,8 @@ class InventoryController extends Controller
         return $this->delegate($table, 'UPDATE', $id, $payload);
     }
 
-    public function destroy(string $table, string $id): JsonResponse
+    /** A soft delete: the row moves to the archive, it is not destroyed. */
+    public function destroy(Request $request, string $table, string $id): JsonResponse
     {
         $now = now()->toIso8601ZuluString('millisecond');
 
@@ -177,7 +178,8 @@ class InventoryController extends Controller
         $payload['updatedAt'] ??= $now;
 
         $response = $this->sync->push([
-            'clientId' => 'rest-api',
+            // The audit log's only remaining author is whoever is signed in.
+            'clientId' => request()->user()?->email ?? 'rest-api',
             'changes' => [[
                 'id' => (string) Str::uuid(),
                 'table' => $table,
@@ -196,7 +198,29 @@ class InventoryController extends Controller
             default => 422,
         };
 
+        // The saved row travels back with the verdict — including on CONFLICT,
+        // which is not a failure: the loan was stored, flagged for review. The server normalises
+        // values on the way in (trimming, defaults, the loan-date calculation),
+        // so echoing the request payload would show the client something subtly
+        // different from what was actually stored.
+        if (in_array($result['status'], ['APPLIED', 'IGNORED_STALE', 'CONFLICT'], true)) {
+            $result['data'] = $this->fetch($table, $docId);
+        }
+
         return response()->json($result, $httpStatus);
+    }
+
+    /** The stored row for `$table`, as the client sees it. */
+    protected function fetch(string $table, string $id): ?array
+    {
+        $model = match ($table) {
+            'offices' => Office::find($id),
+            'categories' => Category::find($id),
+            'equipment' => Equipment::find($id),
+            'borrowings' => BorrowingTransaction::find($id),
+        };
+
+        return $model?->toSyncArray();
     }
 
     protected function applySoftDeleteFilter($query, Request $request): void

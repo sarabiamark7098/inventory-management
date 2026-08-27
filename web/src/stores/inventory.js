@@ -1,19 +1,24 @@
 import { defineStore } from 'pinia'
-import { liveQuery } from 'dexie'
 import { ref, computed } from 'vue'
 
-import { db } from '@/db/local'
-import { enqueue } from '@/db/outbox'
-import { deepClone } from '@/domain/clone'
+import { api, ApiError } from '@/api/client'
 import { calculateExpectedReturn, isOverdue, nowIso, toDateOnly, uuid } from '@/domain/loan'
 import { canBeBorrowed, explainNotBorrowable } from '@/domain/constants'
 
+const TABLES = ['offices', 'categories', 'equipment', 'borrowings']
+
 /**
- * The single write path for the whole app.
+ * The single data path for the whole app.
  *
- * Reads are Dexie live queries, so any local write (or a document arriving from
- * the pull phase) re-renders every screen automatically. Writes always pair the
- * document with an outbox entry — see `db/outbox.js`.
+ * Every read and write goes straight to the API — there is no local database
+ * behind this store, and nothing here survives a reload. The arrays are a
+ * working copy of what the server last told us, kept in memory only so the
+ * screens have something to render and filter without a request per keystroke.
+ *
+ * Writes return the saved row, which is applied over the working copy. That
+ * matters more than it looks: the server normalises values on the way in and
+ * reconciles equipment status from loan activity, so what came back is
+ * frequently not what we sent.
  */
 export const useInventoryStore = defineStore('inventory', () => {
   const offices = ref([])
@@ -21,55 +26,122 @@ export const useInventoryStore = defineStore('inventory', () => {
   const equipment = ref([])
   const borrowings = ref([])
   const loading = ref(true)
+  const error = ref(null)
+  const lastLoadedAt = ref(null)
 
-  let subscriptions = []
+  const collections = { offices, categories, equipment, borrowings }
 
-  function start() {
-    if (subscriptions.length) return
+  /* ------------------------------- loading ---------------------------- */
 
-    const notDeleted = (row) => row.deletedAt == null
+  const byName = (a, b) => a.name.localeCompare(b.name)
+  const byRecency = (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))
 
-    subscriptions = [
-      liveQuery(() => db.offices.filter(notDeleted).toArray()).subscribe({
-        next: (rows) => {
-          offices.value = rows.sort((a, b) => a.name.localeCompare(b.name))
-        },
-      }),
-      liveQuery(() => db.categories.filter(notDeleted).toArray()).subscribe({
-        next: (rows) => {
-          categories.value = rows.sort((a, b) => a.name.localeCompare(b.name))
-          loading.value = false
-        },
-      }),
-      liveQuery(() => db.equipment.filter(notDeleted).toArray()).subscribe({
-        next: (rows) => {
-          equipment.value = rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        },
-      }),
-      liveQuery(() => db.borrowings.filter(notDeleted).toArray()).subscribe({
-        next: (rows) => {
-          borrowings.value = rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        },
-      }),
-    ]
+  const sorters = {
+    offices: byName,
+    categories: byName,
+    equipment: byRecency,
+    borrowings: byRecency,
   }
 
-  function stop() {
-    subscriptions.forEach((s) => s.unsubscribe())
-    subscriptions = []
+  function apply(table, rows) {
+    collections[table].value = [...rows].sort(sorters[table])
+  }
+
+  async function reload(table) {
+    const response = await api.list(table)
+    apply(table, response.data ?? [])
   }
 
   /**
-   * Strips Vue reactivity before a document touches IndexedDB.
+   * Pulls the whole dataset down again.
    *
-   * Form state arrives here as reactive Proxies, and BOTH IndexedDB's `put()`
-   * and the outbox payload go through the structured clone algorithm, which
-   * rejects a Proxy with `DataCloneError`. Every write goes through this, so a
-   * component can hand over its form object without knowing any of that.
+   * All four collections in parallel and replaced wholesale, rather than
+   * merged: this is also the recovery path after a connection drop, and
+   * merging would preserve rows another operator deleted while we were away.
    */
-  function persistable(doc) {
-    return deepClone(doc) ?? doc
+  async function refresh() {
+    loading.value = true
+    error.value = null
+    try {
+      await Promise.all(TABLES.map(reload))
+      lastLoadedAt.value = nowIso()
+    } catch (err) {
+      error.value = describe(err)
+      throw err
+    } finally {
+      loading.value = false
+    }
   }
+
+  /** Loads once for a signed-in session. */
+  async function start() {
+    if (lastLoadedAt.value) return
+    await refresh().catch(() => {
+      /* the connection gate reports this; the store just stays empty */
+    })
+  }
+
+  function stop() {
+    for (const table of TABLES) collections[table].value = []
+    archive.value = { equipment: [], categories: [], offices: [], borrowings: [] }
+    lastLoadedAt.value = null
+    loading.value = true
+    error.value = null
+  }
+
+  function describe(err) {
+    if (err instanceof ApiError) return err.firstValidationError() ?? err.message
+    return err?.message ?? 'Something went wrong.'
+  }
+
+  /* -------------------------------- writes ---------------------------- */
+
+  /** Applies a saved row over the working copy, inserting it if it is new. */
+  function absorb(table, row) {
+    if (!row) return null
+    const list = collections[table].value
+    const at = list.findIndex((item) => item.id === row.id)
+
+    if (row.deletedAt) {
+      if (at >= 0) list.splice(at, 1)
+      return row
+    }
+
+    if (at >= 0) list[at] = row
+    else list.push(row)
+    apply(table, list)
+    return row
+  }
+
+  /**
+   * A 409 is not a failed write.
+   *
+   * The Status Lock Rule stores a disputed loan and flags it
+   * `CONFLICT_PENDING_REVIEW` rather than dropping it — someone physically has
+   * the device either way. So the row is absorbed before the error is
+   * re-thrown, and the caller's error message is the operator's notification
+   * that the booking needs adjudicating.
+   */
+  async function write(table, send) {
+    try {
+      const res = await send()
+      return absorb(table, res.data)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) absorb(table, err.body?.data)
+      throw err
+    }
+  }
+
+  const created = (table, payload) => write(table, () => api.create(table, payload))
+
+  const saved = (table, id, payload) => write(table, () => api.save(table, id, payload))
+
+  const removed = (table, id) =>
+    api.remove(table, id).then(() => {
+      const list = collections[table].value
+      const at = list.findIndex((item) => item.id === id)
+      if (at >= 0) list.splice(at, 1)
+    })
 
   /* --------------------------- derived state -------------------------- */
 
@@ -125,19 +197,16 @@ export const useInventoryStore = defineStore('inventory', () => {
    *
    * A monitor's serial must not collide with another machine's system unit
    * serial either, or scanning one physical device would resolve to two
-   * records. The server enforces the same rule; this just fails fast offline.
+   * records. The server enforces this too; this is the fast, specific message.
    */
-  async function assertSerialsAreFree(serials, ignoreId) {
+  function assertSerialsAreFree(serials, ignoreId) {
     for (const serial of serials) {
       if (!serial) continue
-      const clash = await db.equipment
-        .filter(
-          (row) =>
-            row.deletedAt == null &&
-            row.id !== ignoreId &&
-            (row.serialNumber === serial || row.monitorSerialNumber === serial),
-        )
-        .first()
+      const clash = equipment.value.find(
+        (row) =>
+          row.id !== ignoreId &&
+          (row.serialNumber === serial || row.monitorSerialNumber === serial),
+      )
       if (clash) {
         throw new Error(`Serial number "${serial}" is already used by ${clash.assetTag}.`)
       }
@@ -151,15 +220,11 @@ export const useInventoryStore = defineStore('inventory', () => {
     if (!code) throw new Error('An office code is required.')
     if (!input.name?.trim()) throw new Error('An office name is required.')
 
-    const clash = await db.offices
-      .where('code')
-      .equals(code)
-      .filter((row) => row.deletedAt == null)
-      .first()
+    const clash = offices.value.find((row) => row.code === code)
     if (clash) throw new Error(`Office code "${code}" is already used by ${clash.name}.`)
 
     const ts = nowIso()
-    const doc = persistable({
+    return created('offices', {
       id: uuid(),
       code,
       name: input.name.trim(),
@@ -169,15 +234,10 @@ export const useInventoryStore = defineStore('inventory', () => {
       updatedAt: ts,
       deletedAt: null,
     })
-    await db.transaction('rw', [db.offices, db.sync_queue], async () => {
-      await db.offices.add(doc)
-      await enqueue({ table: 'offices', action: 'INSERT', docId: doc.id, payload: doc })
-    })
-    return doc
   }
 
   async function updateOffice(id, patch) {
-    const current = await db.offices.get(id)
+    const current = officeById.value.get(id)
     if (!current) throw new Error('Office not found.')
 
     if (patch.divisionId === id) throw new Error('An office cannot be its own division.')
@@ -193,64 +253,42 @@ export const useInventoryStore = defineStore('inventory', () => {
     }
 
     const code = (patch.code ?? current.code).trim().toUpperCase()
-    const clash = await db.offices
-      .where('code')
-      .equals(code)
-      .filter((row) => row.deletedAt == null && row.id !== id)
-      .first()
+    const clash = offices.value.find((row) => row.code === code && row.id !== id)
     if (clash) throw new Error(`Office code "${code}" is already used by ${clash.name}.`)
 
-    const doc = persistable({
+    return saved('offices', id, {
       ...current,
       code,
       ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
       ...(patch.divisionId !== undefined ? { divisionId: patch.divisionId || null } : {}),
       updatedAt: nowIso(),
     })
-    await db.transaction('rw', [db.offices, db.sync_queue], async () => {
-      await db.offices.put(doc)
-      await enqueue({ table: 'offices', action: 'UPDATE', docId: id, payload: doc })
-    })
   }
 
   async function deleteOffice(id) {
-    const current = await db.offices.get(id)
+    const current = officeById.value.get(id)
     if (!current) return
 
-    // Refuse here rather than letting it come back REJECTED after a sync.
+    // Refuse here rather than sending a request we know the server will refuse.
     const sections = (sectionsByDivision.value.get(id) ?? []).length
     if (sections > 0) {
-      throw new Error(
-        `${current.name} still has ${sections} section${sections === 1 ? '' : 's'}.`,
-      )
+      throw new Error(`${current.name} still has ${sections} section${sections === 1 ? '' : 's'}.`)
     }
-    const assets = equipment.value.filter(
-      (e) => e.divisionId === id || e.sectionId === id,
-    ).length
+    const assets = equipment.value.filter((e) => e.divisionId === id || e.sectionId === id).length
     if (assets > 0) {
       throw new Error(
         `${current.name} still has ${assets} asset${assets === 1 ? '' : 's'} assigned to it.`,
       )
     }
 
-    const ts = nowIso()
-    const doc = persistable({ ...current, deletedAt: ts, updatedAt: ts })
-    await db.transaction('rw', [db.offices, db.sync_queue], async () => {
-      await db.offices.put(doc)
-      await enqueue({
-        table: 'offices',
-        action: 'DELETE',
-        docId: id,
-        payload: { id, deletedAt: ts, updatedAt: ts },
-      })
-    })
+    return removed('offices', id)
   }
 
   /* ----------------------------- categories --------------------------- */
 
   async function createCategory(input) {
     const ts = nowIso()
-    const doc = persistable({
+    return created('categories', {
       id: uuid(),
       name: input.name.trim(),
       description: input.description?.trim() || null,
@@ -261,18 +299,13 @@ export const useInventoryStore = defineStore('inventory', () => {
       updatedAt: ts,
       deletedAt: null,
     })
-    await db.transaction('rw', [db.categories, db.sync_queue], async () => {
-      await db.categories.add(doc)
-      await enqueue({ table: 'categories', action: 'INSERT', docId: doc.id, payload: doc })
-    })
-    return doc
   }
 
   async function updateCategory(id, patch) {
-    const current = await db.categories.get(id)
+    const current = categoryById.value.get(id)
     if (!current) throw new Error('Category not found.')
 
-    const doc = persistable({
+    return saved('categories', id, {
       ...current,
       ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
       ...(patch.description !== undefined
@@ -287,42 +320,21 @@ export const useInventoryStore = defineStore('inventory', () => {
         : {}),
       updatedAt: nowIso(),
     })
-    await db.transaction('rw', [db.categories, db.sync_queue], async () => {
-      await db.categories.put(doc)
-      await enqueue({ table: 'categories', action: 'UPDATE', docId: id, payload: doc })
-    })
   }
 
-  /** Soft delete, so other clients learn about the removal. */
-  async function deleteCategory(id) {
-    const current = await db.categories.get(id)
-    if (!current) return
-    const ts = nowIso()
-    const doc = persistable({ ...current, deletedAt: ts, updatedAt: ts })
-    await db.transaction('rw', [db.categories, db.sync_queue], async () => {
-      await db.categories.put(doc)
-      await enqueue({
-        table: 'categories',
-        action: 'DELETE',
-        docId: id,
-        payload: { id, deletedAt: ts, updatedAt: ts },
-      })
-    })
-  }
+  /** Soft delete: the category moves to the archive, it is not destroyed. */
+  const deleteCategory = (id) => removed('categories', id)
 
   /* ----------------------------- equipment ---------------------------- */
 
   async function createEquipment(input) {
     const assetTag = input.assetTag.trim()
-    const clash = await db.equipment
-      .where('assetTag')
-      .equals(assetTag)
-      .filter((row) => row.deletedAt == null)
-      .first()
-    if (clash) throw new Error(`Asset tag "${assetTag}" is already in use.`)
+    if (equipment.value.some((row) => row.assetTag === assetTag)) {
+      throw new Error(`Asset tag "${assetTag}" is already in use.`)
+    }
 
-    // Government accountability: refuse here rather than letting the asset sit
-    // in the outbox and come back REJECTED long after the operator moved on.
+    // Government accountability: say so in the form rather than letting the
+    // server reject it with a less specific message.
     const parIssuedTo = input.parIssuedTo?.trim() || null
     if (!parIssuedTo) throw new Error('The PAR must name the officer it is issued to.')
 
@@ -331,7 +343,7 @@ export const useInventoryStore = defineStore('inventory', () => {
 
     const sectionId = input.sectionId || null
     if (sectionId) {
-      const section = await db.offices.get(sectionId)
+      const section = officeById.value.get(sectionId)
       if (section && section.divisionId !== divisionId) {
         throw new Error(`${section.name} is not a section of the selected division.`)
       }
@@ -339,22 +351,18 @@ export const useInventoryStore = defineStore('inventory', () => {
 
     const propertyNumber = input.propertyNumber?.trim() || null
     if (!propertyNumber) throw new Error('A property number is required to register equipment.')
+    if (equipment.value.some((row) => row.propertyNumber === propertyNumber)) {
+      throw new Error(`Property number "${propertyNumber}" is already in use.`)
+    }
 
     const dateAcquired = toDateOnly(input.dateAcquired)
     if (!dateAcquired) throw new Error('An acquisition date is required to register equipment.')
-
-    const numberClash = await db.equipment
-      .where('propertyNumber')
-      .equals(propertyNumber)
-      .filter((row) => row.deletedAt == null)
-      .first()
-    if (numberClash) throw new Error(`Property number "${propertyNumber}" is already in use.`)
 
     const serialNumber = input.serialNumber?.trim() || null
     const monitorSerialNumber = input.monitorSerialNumber?.trim() || null
 
     // A desktop set is one asset with two serialised parts.
-    const category = input.categoryId ? await db.categories.get(input.categoryId) : null
+    const category = input.categoryId ? categoryById.value.get(input.categoryId) : null
     if (category?.requiresMonitorSerial) {
       if (!serialNumber) throw new Error(`${category.name} needs a system unit serial number.`)
       if (!monitorSerialNumber) throw new Error(`${category.name} needs a monitor serial number.`)
@@ -362,10 +370,10 @@ export const useInventoryStore = defineStore('inventory', () => {
     if (serialNumber && serialNumber === monitorSerialNumber) {
       throw new Error('The system unit and monitor cannot share a serial number.')
     }
-    await assertSerialsAreFree([serialNumber, monitorSerialNumber], null)
+    assertSerialsAreFree([serialNumber, monitorSerialNumber], null)
 
     const ts = nowIso()
-    const doc = persistable({
+    return created('equipment', {
       id: uuid(),
       assetTag,
       propertyNumber,
@@ -378,8 +386,8 @@ export const useInventoryStore = defineStore('inventory', () => {
       status: input.status ?? 'AVAILABLE',
       condition: input.condition ?? 'GOOD',
       location: input.location?.trim() || null,
-      divisionId: input.divisionId,
-      sectionId: input.sectionId || null,
+      divisionId,
+      sectionId,
       province: input.province?.trim() || null,
       parIssuedTo,
       subParIssuedTo: input.subParIssuedTo?.trim() || null,
@@ -393,18 +401,13 @@ export const useInventoryStore = defineStore('inventory', () => {
       updatedAt: ts,
       deletedAt: null,
     })
-    await db.transaction('rw', [db.equipment, db.sync_queue], async () => {
-      await db.equipment.add(doc)
-      await enqueue({ table: 'equipment', action: 'INSERT', docId: doc.id, payload: doc })
-    })
-    return doc
   }
 
   async function updateEquipment(id, patch) {
-    const current = await db.equipment.get(id)
+    const current = equipmentById.value.get(id)
     if (!current) throw new Error('Equipment not found.')
 
-    const doc = persistable({ ...current, ...patch, updatedAt: nowIso() })
+    const doc = { ...current, ...patch, updatedAt: nowIso() }
 
     // The picker hands back a Date; the wire format is a calendar date string.
     if (patch.dateAcquired !== undefined) doc.dateAcquired = toDateOnly(patch.dateAcquired)
@@ -416,8 +419,6 @@ export const useInventoryStore = defineStore('inventory', () => {
       'serialNumber',
       'brand',
       'location',
-      'section',
-      'division',
       'province',
       'propertyNumber',
       'parIssuedTo',
@@ -432,83 +433,53 @@ export const useInventoryStore = defineStore('inventory', () => {
       if (typeof doc[key] === 'string') doc[key] = doc[key].trim() || null
     }
 
-    // An edit must never silently drop the accountable document.
     if (doc.serialNumber && doc.serialNumber === doc.monitorSerialNumber) {
       throw new Error('The system unit and monitor cannot share a serial number.')
     }
-    await assertSerialsAreFree([doc.serialNumber, doc.monitorSerialNumber], id)
+    assertSerialsAreFree([doc.serialNumber, doc.monitorSerialNumber], id)
 
+    // An edit must never silently drop the accountable document.
     if (current.parIssuedTo && !doc.parIssuedTo) doc.parIssuedTo = current.parIssuedTo
     if (current.divisionId && !doc.divisionId) doc.divisionId = current.divisionId
     if (current.propertyNumber && !doc.propertyNumber) doc.propertyNumber = current.propertyNumber
     if (current.dateAcquired && !doc.dateAcquired) doc.dateAcquired = current.dateAcquired
 
-    await db.transaction('rw', [db.equipment, db.sync_queue], async () => {
-      await db.equipment.put(doc)
-      await enqueue({ table: 'equipment', action: 'UPDATE', docId: id, payload: doc })
-    })
+    return saved('equipment', id, doc)
   }
 
-  async function deleteEquipment(id) {
-    const current = await db.equipment.get(id)
-    if (!current) return
-    const ts = nowIso()
-    const doc = persistable({ ...current, deletedAt: ts, updatedAt: ts })
-    await db.transaction('rw', [db.equipment, db.sync_queue], async () => {
-      await db.equipment.put(doc)
-      await enqueue({
-        table: 'equipment',
-        action: 'DELETE',
-        docId: id,
-        payload: { id, deletedAt: ts, updatedAt: ts },
-      })
-    })
-  }
+  /** Soft delete: the asset moves to the archive, where it can be destroyed. */
+  const deleteEquipment = (id) => removed('equipment', id)
 
-  /** Asset-tag / serial / QR lookup used by the scanner. */
-  async function findByCode(code) {
+  /** Asset-tag / property-number / serial / QR lookup used by the scanner. */
+  function findByCode(code) {
     const trimmed = code.trim()
     if (!trimmed) return null
-    const alive = (row) => row?.deletedAt == null
 
-    const byTag = await db.equipment.where('assetTag').equals(trimmed).filter(alive).first()
-    if (byTag) return byTag
-
-    const byProperty = await db.equipment
-      .where('propertyNumber')
-      .equals(trimmed)
-      .filter(alive)
-      .first()
-    if (byProperty) return byProperty
-
-    const bySerial = await db.equipment.where('serialNumber').equals(trimmed).filter(alive).first()
-    if (bySerial) return bySerial
-
-    const byMonitor = await db.equipment
-      .where('monitorSerialNumber')
-      .equals(trimmed)
-      .filter(alive)
-      .first()
-    if (byMonitor) return byMonitor
+    const match = equipment.value.find(
+      (row) =>
+        row.assetTag === trimmed ||
+        row.propertyNumber === trimmed ||
+        row.serialNumber === trimmed ||
+        row.monitorSerialNumber === trimmed,
+    )
+    if (match) return match
 
     // QR payloads are minted as `ICT:<uuid>` by the label generator.
     const id = trimmed.startsWith('ICT:') ? trimmed.slice(4) : trimmed
-    const byId = await db.equipment.get(id)
-    return alive(byId) ? byId : null
+    return equipmentById.value.get(id) ?? null
   }
 
   /* ----------------------------- borrowing ---------------------------- */
 
-  async function resolveLoanDays(equipmentDoc, override) {
+  function resolveLoanDays(equipmentDoc, override) {
     if (override !== undefined && override !== null) return Number(override)
     if (!equipmentDoc?.categoryId) return 7
-    const category = await db.categories.get(equipmentDoc.categoryId)
-    return category?.defaultLoanDays ?? 7
+    return categoryById.value.get(equipmentDoc.categoryId)?.defaultLoanDays ?? 7
   }
 
   async function checkout(input) {
-    const asset = await db.equipment.get(input.equipmentId)
-    if (!asset || asset.deletedAt) throw new Error('Equipment not found.')
+    const asset = equipmentById.value.get(input.equipmentId)
+    if (!asset) throw new Error('Equipment not found.')
     // Permanently issued, under repair, written off — out of the loan pool.
     if (!canBeBorrowed(asset.status)) {
       throw new Error(`${asset.assetTag} ${explainNotBorrowable(asset.status)}.`)
@@ -519,11 +490,11 @@ export const useInventoryStore = defineStore('inventory', () => {
       )
     }
 
-    const loanDays = await resolveLoanDays(asset, input.loanDays)
+    const loanDays = resolveLoanDays(asset, input.loanDays)
     const issueDate = input.issueDate ?? nowIso()
     const ts = nowIso()
 
-    const tx = persistable({
+    const tx = await created('borrowings', {
       id: uuid(),
       equipmentId: asset.id,
       borrowerName: input.borrowerName.trim(),
@@ -540,47 +511,36 @@ export const useInventoryStore = defineStore('inventory', () => {
       deletedAt: null,
     })
 
-    await db.transaction('rw', [db.borrowings, db.sync_queue], async () => {
-      await db.borrowings.add(tx)
-      await enqueue({ table: 'borrowings', action: 'INSERT', docId: tx.id, payload: tx })
-    })
-
-    if (tx.status !== 'REQUESTED') {
-      await updateEquipment(asset.id, { status: 'BORROWED' })
-    }
+    // The server sets the asset's status from the loan it just accepted — and
+    // may refuse to, if another operator booked the same window first. Read it
+    // back rather than assuming BORROWED.
+    await reload('equipment')
     return tx
   }
 
-  function requestLoan(input) {
-    return checkout({ ...input, status: 'REQUESTED' })
-  }
+  const requestLoan = (input) => checkout({ ...input, status: 'REQUESTED' })
 
   async function setBorrowingStatus(id, status) {
-    const current = await db.borrowings.get(id)
+    const current = borrowings.value.find((tx) => tx.id === id)
     if (!current) throw new Error('Transaction not found.')
-    const doc = persistable({ ...current, status, updatedAt: nowIso() })
-    await db.transaction('rw', [db.borrowings, db.sync_queue], async () => {
-      await db.borrowings.put(doc)
-      await enqueue({ table: 'borrowings', action: 'UPDATE', docId: id, payload: doc })
-    })
+
+    const doc = await saved('borrowings', id, { ...current, status, updatedAt: nowIso() })
+    await reload('equipment')
     return doc
   }
 
-  async function approveRequest(id) {
-    const doc = await setBorrowingStatus(id, 'ISSUED')
-    if (doc.equipmentId) await updateEquipment(doc.equipmentId, { status: 'BORROWED' })
-  }
+  const approveRequest = (id) => setBorrowingStatus(id, 'ISSUED')
 
   /**
    * Return inspection (US-3.3). Condition drives the asset's next status:
    * DAMAGED/POOR routes to MAINTENANCE, otherwise back to AVAILABLE.
    */
   async function processReturn(input) {
-    const current = await db.borrowings.get(input.transactionId)
+    const current = borrowings.value.find((tx) => tx.id === input.transactionId)
     if (!current) throw new Error('Transaction not found.')
 
     const inspection = input.inspectionNotes?.trim()
-    const doc = persistable({
+    await saved('borrowings', current.id, {
       ...current,
       status: 'RETURNED',
       actualReturnDate: input.actualReturnDate ?? nowIso(),
@@ -590,17 +550,9 @@ export const useInventoryStore = defineStore('inventory', () => {
       updatedAt: nowIso(),
     })
 
-    await db.transaction('rw', [db.borrowings, db.sync_queue], async () => {
-      await db.borrowings.put(doc)
-      await enqueue({
-        table: 'borrowings',
-        action: 'UPDATE',
-        docId: doc.id,
-        payload: doc,
-      })
-    })
-
     if (current.equipmentId) {
+      // Closing the loan frees the asset server-side; this is the inspector's
+      // verdict on top of that, which the server has no way to know.
       const nextStatus = input.markLost
         ? 'LOST'
         : ['DAMAGED', 'POOR'].includes(input.condition)
@@ -610,21 +562,70 @@ export const useInventoryStore = defineStore('inventory', () => {
         status: nextStatus,
         condition: input.condition,
       })
+    } else {
+      await reload('equipment')
     }
   }
 
-  /** Promotes past-due active loans to OVERDUE and queues the change (US-3.4). */
+  /** Promotes past-due active loans to OVERDUE (US-3.4). */
   async function sweepOverdue() {
-    const candidates = await db.borrowings
-      .where('status')
-      .anyOf('ISSUED', 'APPROVED')
-      .filter((tx) => tx.deletedAt == null && isOverdue(tx))
-      .toArray()
+    const candidates = borrowings.value.filter(
+      (tx) => ['ISSUED', 'APPROVED'].includes(tx.status) && isOverdue(tx),
+    )
 
     for (const tx of candidates) {
       await setBorrowingStatus(tx.id, 'OVERDUE')
     }
     return candidates
+  }
+
+  /* ------------------------------- archive ---------------------------- */
+
+  const archive = ref({ equipment: [], categories: [], offices: [], borrowings: [] })
+  const archiveLoading = ref(false)
+
+  const archivedCount = computed(
+    () => Object.values(archive.value).reduce((sum, rows) => sum + rows.length, 0),
+  )
+
+  async function loadArchive() {
+    archiveLoading.value = true
+    try {
+      archive.value = await api.archive()
+    } finally {
+      archiveLoading.value = false
+    }
+  }
+
+  /**
+   * Puts an archived asset back into the live register.
+   *
+   * The counterpart to the soft delete on the equipment screen, and the reason
+   * archiving is safe to do: it is undoable by anyone who can write inventory.
+   */
+  async function restoreEquipment(id) {
+    const result = await api.restoreEquipment(id)
+    archive.value = {
+      ...archive.value,
+      equipment: archive.value.equipment.filter((row) => row.id !== id),
+    }
+    absorb('equipment', result.data)
+    return result
+  }
+
+  /**
+   * Destroys an archived asset permanently. Admin-only, and enforced as such
+   * by the API — this is the one action in the system with no undo.
+   */
+  async function purgeEquipment(id) {
+    const result = await api.purgeEquipment(id)
+    archive.value = {
+      ...archive.value,
+      equipment: archive.value.equipment.filter((row) => row.id !== id),
+    }
+    // A purge detaches loan rows from the asset they referenced.
+    await reload('borrowings')
+    return result
   }
 
   return {
@@ -640,6 +641,8 @@ export const useInventoryStore = defineStore('inventory', () => {
     equipment,
     borrowings,
     loading,
+    error,
+    lastLoadedAt,
     categoryById,
     equipmentById,
     activeLoans,
@@ -649,6 +652,7 @@ export const useInventoryStore = defineStore('inventory', () => {
     stats,
     start,
     stop,
+    refresh,
     createCategory,
     updateCategory,
     deleteCategory,
@@ -662,5 +666,11 @@ export const useInventoryStore = defineStore('inventory', () => {
     setBorrowingStatus,
     processReturn,
     sweepOverdue,
+    archive,
+    archiveLoading,
+    archivedCount,
+    loadArchive,
+    restoreEquipment,
+    purgeEquipment,
   }
 })

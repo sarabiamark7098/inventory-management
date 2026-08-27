@@ -119,7 +119,7 @@ async function save() {
     toast.add({
       severity: 'success',
       summary: form.value.id ? 'Office updated' : 'Office added',
-      detail: 'Saved locally and queued for sync.',
+      detail: 'Saved.',
       life: 2500,
     })
   } catch (err) {
@@ -187,7 +187,7 @@ function confirmDelete(office) {
 
     <div v-if="inventory.loading" class="empty-state">
       <ProgressSpinner style="width: 2.5rem; height: 2.5rem" />
-      <p>Loading local database…</p>
+      <p>Loading the office register…</p>
     </div>
 
     <Card v-else-if="tree.length === 0">

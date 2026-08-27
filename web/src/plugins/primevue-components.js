@@ -5,6 +5,7 @@
  * SFCs free of repetitive import blocks, and makes the UI vocabulary explicit.
  */
 import Avatar from 'primevue/avatar'
+import Badge from 'primevue/badge'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Checkbox from 'primevue/checkbox'
@@ -24,6 +25,11 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
+import Tab from 'primevue/tab'
+import TabList from 'primevue/tablist'
+import TabPanel from 'primevue/tabpanel'
+import TabPanels from 'primevue/tabpanels'
+import Tabs from 'primevue/tabs'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import Toast from 'primevue/toast'
@@ -31,6 +37,7 @@ import Toolbar from 'primevue/toolbar'
 
 const components = {
   Avatar,
+  Badge,
   Button,
   Card,
   Checkbox,
@@ -50,6 +57,11 @@ const components = {
   ProgressSpinner,
   Select,
   SelectButton,
+  Tab,
+  TabList,
+  TabPanel,
+  TabPanels,
+  Tabs,
   Tag,
   Textarea,
   Toast,

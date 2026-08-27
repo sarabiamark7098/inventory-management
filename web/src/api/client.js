@@ -1,8 +1,12 @@
 /**
- * Thin HTTP client for the Laravel API project.
+ * HTTP client for the Laravel API project.
  *
  * The two projects are deployed separately, so the base URL is configuration
  * (`VITE_API_URL`) rather than a same-origin assumption.
+ *
+ * This is the app's only data source. There is no local cache behind it: a
+ * failed request is a failed operation, and the caller is expected to say so
+ * rather than pretend the write landed.
  */
 const BASE_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api').replace(/\/$/, '')
 
@@ -14,6 +18,11 @@ export class ApiError extends Error {
     this.name = 'ApiError'
     this.status = status
     this.body = body
+  }
+
+  /** Status 0 is our marker for "the request never reached the server". */
+  get isOffline() {
+    return this.status === 0
   }
 
   /** 5xx and network failures are worth retrying; 4xx needs a human. */
@@ -57,6 +66,17 @@ export function setUnauthenticatedHandler(handler) {
   onUnauthenticated = handler
 }
 
+/**
+ * Called whenever a request proves the server is or is not reachable. The
+ * connection store registers a handler, so ordinary traffic keeps the
+ * indicator honest without a separate polling loop doing the same work.
+ */
+let onReachability = null
+
+export function setReachabilityHandler(handler) {
+  onReachability = handler
+}
+
 async function request(path, options = {}) {
   const token = readToken()
 
@@ -73,8 +93,15 @@ async function request(path, options = {}) {
     })
   } catch (cause) {
     // Offline, DNS failure, CORS rejection — all indistinguishable here.
-    throw new ApiError(cause?.message ?? 'Network request failed', 0, null)
+    onReachability?.(false)
+    throw new ApiError(
+      'Cannot reach the server. Check your connection and try again.',
+      0,
+      { cause: cause?.message ?? null },
+    )
   }
+
+  onReachability?.(true)
 
   const text = await response.text()
   let body = null
@@ -103,6 +130,13 @@ async function request(path, options = {}) {
 const json = (method) => (path, payload) =>
   request(path, { method, body: JSON.stringify(payload ?? {}) })
 
+const query = (params) => {
+  const search = new URLSearchParams(
+    Object.entries(params ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== ''),
+  ).toString()
+  return search ? `?${search}` : ''
+}
+
 export const api = {
   health: () => request('/health'),
 
@@ -115,24 +149,22 @@ export const api = {
   logout: () => json('POST')('/auth/logout'),
 
   // Accounts (admin only)
-  users: (params = {}) => {
-    const query = new URLSearchParams(
-      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== ''),
-    ).toString()
-    return request(`/users${query ? `?${query}` : ''}`)
-  },
+  users: (params) => request(`/users${query(params)}`),
   createUser: (payload) => json('POST')('/users', payload),
   updateUser: (id, payload) => json('PUT')(`/users/${id}`, payload),
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 
-  // Sync
-  push: (payload) => json('POST')('/sync/push', payload),
-  pull: (lastSyncedAt) =>
-    request(
-      lastSyncedAt
-        ? `/sync/pull?last_synced_at=${encodeURIComponent(lastSyncedAt)}`
-        : '/sync/pull',
-    ),
+  // Inventory. `list` returns the collection; the write verbs return the saved
+  // row under `data`, so a caller can update one record without a refetch.
+  list: (table, params) => request(`/${table}${query(params)}`),
+  create: (table, payload) => json('POST')(`/${table}`, payload),
+  save: (table, id, payload) => json('PUT')(`/${table}/${id}`, payload),
+  remove: (table, id) => request(`/${table}/${id}`, { method: 'DELETE' }),
+
+  // Archive: soft-deleted records, put back or disposed of for good.
+  archive: () => request('/archive'),
+  restoreEquipment: (id) => json('POST')(`/archive/equipment/${id}/restore`),
+  purgeEquipment: (id) => request(`/archive/equipment/${id}`, { method: 'DELETE' }),
 
   stats: () => request('/stats'),
 }

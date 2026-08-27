@@ -289,7 +289,7 @@ FAIL=0
 HEALTH="$(curl -fsS "http://127.0.0.1/inventory_management_api/api/health" 2>/dev/null || true)"
 if [[ "$HEALTH" == *'"status":"ok"'* ]]; then ok "API health OK"; else warn "API health FAILED: $HEALTH"; FAIL=1; fi
 
-CODE="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/inventory_management_api/api/sync/pull)"
+CODE="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/inventory_management_api/api/equipment)"
 if [[ "$CODE" == "401" ]]; then ok "unauthenticated request returns 401"; else warn "expected 401, got $CODE"; FAIL=1; fi
 
 CODE="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/inventory_management_api/.env)"

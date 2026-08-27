@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { api, ApiError, TOKEN_STORAGE_KEY, setUnauthenticatedHandler } from '@/api/client'
-import { resetLocal } from '@/db/local'
 
 /**
  * Passwordless authentication.
@@ -115,8 +114,9 @@ export const useAuthStore = defineStore('auth', () => {
       const response = await api.me()
       user.value = response.user
     } catch (err) {
-      // A dead token is cleared; a network failure keeps it so the user stays
-      // signed in and can keep working offline.
+      // A dead token is cleared. A network failure keeps it, so someone whose
+      // connection blinked lands back on their session rather than being made
+      // to fetch a new emailed code.
       if (err instanceof ApiError && !err.isTransient) {
         persistToken(null)
         user.value = null
@@ -126,7 +126,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function logout({ wipeLocal = true } = {}) {
+  async function logout() {
     try {
       if (token.value) await api.logout()
     } catch {
@@ -136,9 +136,8 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
     restart()
 
-    // Inventory data is cached on this device; a shared workstation must not
-    // leak the previous user's catalogue and loan history.
-    if (wipeLocal) await resetLocal().catch(() => {})
+    // No inventory data to wipe: the store is memory only and App.vue clears
+    // it as soon as `isAuthenticated` goes false.
   }
 
   /** Called by the API client when the server rejects our token mid-session. */
