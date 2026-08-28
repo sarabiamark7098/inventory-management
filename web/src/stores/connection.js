@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { api, setReachabilityHandler } from '@/api/client'
+import { coalesce } from '@/domain/async'
 
 /** How often to re-probe while the server is known to be unreachable. */
 const RETRY_MS = 5000
@@ -62,9 +63,16 @@ export const useConnectionStore = defineStore('connection', () => {
     }
   }
 
-  /** Probes /health directly. Used on boot, by the retry loop, and by the UI. */
-  async function check() {
-    if (checking.value) return reachable.value
+  /**
+   * Probes /health directly. Used on boot, by the retry loop, and by the UI.
+   *
+   * Coalesced rather than guarded by a flag: while the server is down, the
+   * retry timer, an `online` event and someone jabbing the badge all arrive
+   * together, and each caller wants the answer. Returning the stale value
+   * immediately would tell the UI "still offline" a moment before the probe
+   * proves otherwise, so they share the one in-flight probe instead.
+   */
+  const check = coalesce(async () => {
     checking.value = true
     try {
       await api.health()
@@ -76,7 +84,7 @@ export const useConnectionStore = defineStore('connection', () => {
       checking.value = false
     }
     return reachable.value
-  }
+  })
 
   function schedule() {
     if (timer) clearTimeout(timer)

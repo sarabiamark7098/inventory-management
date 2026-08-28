@@ -9,6 +9,7 @@ import QrLabelSheet from '@/components/QrLabelSheet.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { EQUIPMENT_CONDITIONS, EQUIPMENT_STATUSES, PROVINCES } from '@/domain/constants'
 import { useIsMobile } from '@/composables/useBreakpoint'
+import { useDebounced } from '@/composables/useDebounced'
 import { formatDate } from '@/domain/loan'
 import { useInventoryStore } from '@/stores/inventory'
 
@@ -19,6 +20,8 @@ const toast = useToast()
 const isMobile = useIsMobile()
 
 const search = ref('')
+// Typing stays instant; the assets are re-filtered once it stops.
+const searchTerm = useDebounced(search)
 const statusFilter = ref(null)
 const categoryFilter = ref(null)
 const conditionFilter = ref(null)
@@ -53,7 +56,7 @@ const divisionOptions = computed(() =>
 
 /** Filtering runs over the loaded register, so it costs no round-trip (US-2.4). */
 const filtered = computed(() => {
-  const term = search.value.trim().toLowerCase()
+  const term = searchTerm.value.trim().toLowerCase()
   return inventory.equipment.filter((item) => {
     if (statusFilter.value && item.status !== statusFilter.value) return false
     if (conditionFilter.value && item.condition !== conditionFilter.value) return false

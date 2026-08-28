@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
 import { api, ApiError } from '@/api/client'
+import { coalesce } from '@/domain/async'
 import { calculateExpectedReturn, isOverdue, nowIso, toDateOnly, uuid } from '@/domain/loan'
 import { canBeBorrowed, explainNotBorrowable } from '@/domain/constants'
 
@@ -59,7 +60,7 @@ export const useInventoryStore = defineStore('inventory', () => {
    * merged: this is also the recovery path after a connection drop, and
    * merging would preserve rows another operator deleted while we were away.
    */
-  async function refresh() {
+  const refresh = coalesce(async () => {
     loading.value = true
     error.value = null
     try {
@@ -71,7 +72,7 @@ export const useInventoryStore = defineStore('inventory', () => {
     } finally {
       loading.value = false
     }
-  }
+  })
 
   /** Loads once for a signed-in session. */
   async function start() {
@@ -588,14 +589,15 @@ export const useInventoryStore = defineStore('inventory', () => {
     () => Object.values(archive.value).reduce((sum, rows) => sum + rows.length, 0),
   )
 
-  async function loadArchive() {
+  /** Coalesced: mounting the screen and hitting Refresh should fetch it once. */
+  const loadArchive = coalesce(async () => {
     archiveLoading.value = true
     try {
       archive.value = await api.archive()
     } finally {
       archiveLoading.value = false
     }
-  }
+  })
 
   /**
    * Puts an archived asset back into the live register.

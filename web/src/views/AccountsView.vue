@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 
@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/domain/loan'
 import { describeAllowedDomains, emailPlaceholder, isAllowedEmail } from '@/domain/email'
 import { useIsMobile } from '@/composables/useBreakpoint'
+import { debounce, sequencer } from '@/domain/async'
 
 const auth = useAuthStore()
 const confirm = useConfirm()
@@ -40,19 +41,38 @@ function describe(err) {
   return err?.message ?? 'Something went wrong.'
 }
 
+/*
+ * The account list is filtered by the server, so each change is a request and
+ * two can be in flight at once. The newest search must win whichever response
+ * arrives first, or the list settles on results for a term already typed past.
+ */
+const nextLoad = sequencer()
+
 async function load() {
+  const isCurrent = nextLoad()
   loading.value = true
   loadError.value = null
   try {
     const response = await api.users({ search: search.value })
+    if (!isCurrent()) return
     users.value = response.data
     roles.value = response.roles
   } catch (err) {
+    if (!isCurrent()) return
     loadError.value = describe(err)
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
+
+/**
+ * Searching used to need the Enter key, which is a fair way to avoid a request
+ * per keystroke but leaves the list showing something other than what the box
+ * says. Debounced, it keeps up on its own; Enter now just skips the wait.
+ */
+const queueSearch = debounce(load, 300)
+watch(search, queueSearch)
+onUnmounted(queueSearch.cancel)
 
 onMounted(load)
 
@@ -184,7 +204,7 @@ const roleSeverity = { ADMIN: 'danger', MANAGER: 'info' }
             placeholder="Search name or email…"
             aria-label="Search accounts"
             fluid
-            @keydown.enter="load"
+            @keydown.enter="queueSearch.flush"
           />
         </IconField>
       </template>

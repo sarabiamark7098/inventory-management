@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { api, ApiError } from '@/api/client'
+import { sequencer } from '@/domain/async'
 
 /**
  * The activity history.
@@ -52,7 +53,15 @@ export const useHistoryStore = defineStore('history', () => {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
   }
 
+  /*
+   * Filters are typed and clicked in quick succession, so several loads can be
+   * in flight at once. Whichever was asked for last is the one the screen must
+   * end up showing, whichever answer happens to arrive first.
+   */
+  const nextLoad = sequencer()
+
   async function load(page = 1) {
+    const isCurrent = nextLoad()
     loading.value = true
     error.value = null
     try {
@@ -67,20 +76,28 @@ export const useHistoryStore = defineStore('history', () => {
         to: toDateParam(filters.value.to),
       })
 
+      if (!isCurrent()) return
+
       entries.value = response.data ?? []
       meta.value = response.meta ?? meta.value
       options.value = response.filters ?? options.value
     } catch (err) {
+      if (!isCurrent()) return
       error.value = err instanceof ApiError ? (err.firstValidationError() ?? err.message) : err.message
       throw err
     } finally {
-      loading.value = false
+      // A superseded load must not clear a spinner the newer one still needs.
+      if (isCurrent()) loading.value = false
     }
   }
 
   /** Any filter change resets to page 1 — page 4 of the old result is meaningless. */
   const applyFilters = () => load(1)
 
+  /**
+   * Resets the filters and nothing else. The screen watches them and reloads,
+   * so reloading here too would mean two requests for one click.
+   */
   function clearFilters() {
     filters.value = {
       search: '',
@@ -90,7 +107,6 @@ export const useHistoryStore = defineStore('history', () => {
       from: null,
       to: null,
     }
-    return load(1)
   }
 
   /** One entry with its field-level changes, fetched on demand. */

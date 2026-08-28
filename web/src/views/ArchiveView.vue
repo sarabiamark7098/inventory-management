@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useInventoryStore } from '@/stores/inventory'
 import { formatDate, formatDateTime } from '@/domain/loan'
 import { useIsMobile } from '@/composables/useBreakpoint'
+import { useDebounced } from '@/composables/useDebounced'
 
 const inventory = useInventoryStore()
 const auth = useAuthStore()
@@ -15,6 +16,8 @@ const toast = useToast()
 const isMobile = useIsMobile()
 
 const search = ref('')
+// Typing stays instant; the archived records are re-filtered once it stops.
+const searchTerm = useDebounced(search)
 const purging = ref(null)
 const restoring = ref(null)
 
@@ -30,7 +33,7 @@ function reportFailure(err) {
 }
 
 const matches = (haystack) => {
-  const term = search.value.trim().toLowerCase()
+  const term = searchTerm.value.trim().toLowerCase()
   return !term || haystack.filter(Boolean).join(' ').toLowerCase().includes(term)
 }
 

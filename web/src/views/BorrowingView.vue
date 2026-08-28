@@ -7,6 +7,7 @@ import ReturnDialog from '@/components/ReturnDialog.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { daysUntilDue, formatDate, isOverdue } from '@/domain/loan'
 import { useIsMobile } from '@/composables/useBreakpoint'
+import { useDebounced } from '@/composables/useDebounced'
 import { useInventoryStore } from '@/stores/inventory'
 
 const inventory = useInventoryStore()
@@ -16,6 +17,8 @@ const isMobile = useIsMobile()
 
 const tab = ref('active')
 const search = ref('')
+// Typing stays instant; the loans are re-filtered once it stops.
+const searchTerm = useDebounced(search)
 const checkoutOpen = ref(false)
 const returning = ref(null)
 const returnOpen = ref(false)
@@ -43,7 +46,7 @@ const buckets = computed(() => {
 
 const rows = computed(() => {
   const source = buckets.value[tab.value]
-  const term = search.value.trim().toLowerCase()
+  const term = searchTerm.value.trim().toLowerCase()
   if (!term) return source
 
   return source.filter((tx) => {

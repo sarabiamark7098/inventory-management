@@ -1,8 +1,9 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 
 import { useHistoryStore } from '@/stores/history'
+import { debounce } from '@/domain/async'
 import { formatDateTime } from '@/domain/loan'
 import { useIsMobile } from '@/composables/useBreakpoint'
 
@@ -26,19 +27,20 @@ function report(err) {
 }
 
 /**
- * Typing shouldn't fire a request per keystroke, and the log is paged
- * server-side so it cannot be filtered in the browser instead.
+ * Every filter reloads through one debounce, not just the search box.
+ *
+ * The log is paged and filtered server-side, so it cannot be narrowed in the
+ * browser instead — each change is a request. Typing is the obvious source of
+ * repeats, but a date range is two changes in a row, and a select cleared then
+ * re-set is another. Watching the whole filter object means no control has to
+ * remember to ask for the reload, and a burst collapses into one request. At
+ * 300ms a dropdown still feels immediate.
  */
-let searchTimer
-watch(
-  () => history.filters.search,
-  () => {
-    clearTimeout(searchTimer)
-    searchTimer = setTimeout(() => history.applyFilters().catch(report), 350)
-  },
-)
+const rerun = debounce(() => history.applyFilters().catch(report), 300)
 
-const rerun = () => history.applyFilters().catch(report)
+watch(() => history.filters, rerun, { deep: true })
+
+onUnmounted(rerun.cancel)
 
 function onPage(event) {
   history.load(event.page + 1).catch(report)
@@ -140,7 +142,6 @@ const snapshotRows = computed(() =>
         placeholder="Anything"
         show-clear
         aria-label="Filter by record type"
-        @change="rerun"
       />
       <Select
         v-model="history.filters.operation"
@@ -150,7 +151,6 @@ const snapshotRows = computed(() =>
         placeholder="Any action"
         show-clear
         aria-label="Filter by action"
-        @change="rerun"
       />
       <Select
         v-model="history.filters.actor"
@@ -161,7 +161,6 @@ const snapshotRows = computed(() =>
         show-clear
         filter
         aria-label="Filter by person"
-        @change="rerun"
       >
         <template #option="{ option }">
           <span>{{ option.label }}</span>
@@ -180,8 +179,6 @@ const snapshotRows = computed(() =>
         show-icon
         icon-display="input"
         aria-label="From date"
-        @date-select="rerun"
-        @clear-click="rerun"
       />
       <DatePicker
         v-model="history.filters.to"
@@ -190,8 +187,6 @@ const snapshotRows = computed(() =>
         show-icon
         icon-display="input"
         aria-label="To date"
-        @date-select="rerun"
-        @clear-click="rerun"
       />
       <Button
         v-if="history.hasFilters"
@@ -199,7 +194,7 @@ const snapshotRows = computed(() =>
         icon="pi pi-filter-slash"
         text
         size="small"
-        @click="history.clearFilters().catch(report)"
+        @click="history.clearFilters()"
       />
     </div>
 

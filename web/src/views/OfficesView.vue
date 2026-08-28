@@ -4,12 +4,15 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 
 import { useInventoryStore } from '@/stores/inventory'
+import { useDebounced } from '@/composables/useDebounced'
 
 const inventory = useInventoryStore()
 const confirm = useConfirm()
 const toast = useToast()
 
 const search = ref('')
+// Typing stays instant; the offices are re-filtered once it stops.
+const searchTerm = useDebounced(search)
 const collapsed = ref(new Set())
 
 const dialogOpen = ref(false)
@@ -39,7 +42,7 @@ const usage = computed(() => {
  * visible — an office out of its chart is meaningless.
  */
 const tree = computed(() => {
-  const term = search.value.trim().toLowerCase()
+  const term = searchTerm.value.trim().toLowerCase()
   const matches = (o) =>
     !term || `${o.name} ${o.code}`.toLowerCase().includes(term)
 
