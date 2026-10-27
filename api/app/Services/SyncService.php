@@ -6,6 +6,7 @@ use App\Domain\InventoryStatus;
 use App\Domain\LoanCalculator;
 use App\Models\BorrowingTransaction;
 use App\Models\Category;
+use App\Models\Concerns\ActivityLogMode;
 use App\Models\Equipment;
 use App\Models\Office;
 use Carbon\CarbonImmutable;
@@ -180,18 +181,94 @@ class SyncService
     /* Dispatch                                                            */
     /* ------------------------------------------------------------------ */
 
-    protected function applyChange(array $change): array
+    /**
+     * Applies one change in its own transaction.
+     *
+     * `$bulk` is passed only by `pushBatch()`, which has already opened a
+     * transaction around the whole chunk — opening another per row would make
+     * every one of them a savepoint for no benefit.
+     */
+    protected function applyChange(array $change, ?BulkContext $bulk = null): array
     {
-        return DB::transaction(function () use ($change) {
-            $result = match ($change['table']) {
-                'offices' => $this->applyOffice($change),
-                'categories' => $this->applyCategory($change),
-                'equipment' => $this->applyEquipment($change),
-                'borrowings' => $this->applyBorrowing($change),
-            };
+        $apply = fn () => match ($change['table']) {
+            'offices' => $this->applyOffice($change),
+            'categories' => $this->applyCategory($change),
+            'equipment' => $this->applyEquipment($change, $bulk),
+            'borrowings' => $this->applyBorrowing($change),
+        };
 
-            return $result;
-        });
+        return $bulk ? $apply() : DB::transaction($apply);
+    }
+
+    /**
+     * Writes a batch the caller has already validated — the import path.
+     *
+     * Three things make this bearable at thousands of rows where `push()` is
+     * not. Offices and categories are resolved once for the batch rather than
+     * per row; the uniqueness SELECTs are skipped because the caller has
+     * already run them, leaving the unique indexes as the guarantee; and a
+     * chunk shares one transaction instead of opening five hundred.
+     *
+     * When a chunk does fail — a concurrent writer taking an identifier
+     * between the caller's check and this insert — the whole chunk rolls back
+     * and is replayed one row at a time, so one clash costs one record and the
+     * operator is told which. That path is rare by construction, which is why
+     * the fast path is allowed to assume it will not happen.
+     *
+     * @param  list<array>  $changes
+     */
+    public function pushBatch(array $changes, ?BulkContext $context = null, int $chunkSize = 500): array
+    {
+        return ActivityLogMode::duringTrustedBatch(
+            fn () => $this->applyBatch($changes, $context ?? new BulkContext(preValidated: true), $chunkSize),
+        );
+    }
+
+    /** @param  list<array>  $changes */
+    private function applyBatch(array $changes, BulkContext $context, int $chunkSize): array
+    {
+        $results = [];
+
+        foreach (array_chunk($changes, $chunkSize) as $chunk) {
+            try {
+                $applied = DB::transaction(function () use ($chunk, $context) {
+                    $verdicts = [];
+                    foreach ($chunk as $change) {
+                        $verdicts[] = $this->applyChange($change, $context);
+                    }
+
+                    return $verdicts;
+                });
+
+                array_push($results, ...$applied);
+            } catch (Throwable $e) {
+                if ($this->isInfrastructureFailure($e)) {
+                    throw $e;
+                }
+
+                // The chunk is gone; nothing in it was written. Replay it row
+                // by row so the failures are attributed and the rest survive.
+                foreach ($chunk as $change) {
+                    try {
+                        $results[] = $this->applyChange($change);
+                    } catch (Throwable $rowError) {
+                        if ($this->isInfrastructureFailure($rowError)) {
+                            throw $rowError;
+                        }
+
+                        $results[] = [
+                            'changeId' => $change['id'],
+                            'table' => $change['table'],
+                            'docId' => $change['docId'],
+                            'status' => 'REJECTED',
+                            'message' => $this->describe($rowError),
+                        ];
+                    }
+                }
+            }
+        }
+
+        return ['serverTime' => now()->toIso8601ZuluString('millisecond'), 'results' => $results];
     }
 
     /**
@@ -373,6 +450,9 @@ class SyncService
             'requires_monitor_serial' => (bool) ($payload['requiresMonitorSerial']
                 ?? $existing?->requires_monitor_serial
                 ?? false),
+            'tracks_anydesk' => (bool) ($payload['tracksAnydesk']
+                ?? $existing?->tracks_anydesk
+                ?? false),
             'deleted_at' => $this->date($payload['deletedAt'] ?? null),
             'updated_at' => $updatedAt,
         ];
@@ -391,10 +471,13 @@ class SyncService
     /* Equipment                                                           */
     /* ------------------------------------------------------------------ */
 
-    protected function applyEquipment(array $change): array
+    protected function applyEquipment(array $change, ?BulkContext $bulk = null): array
     {
         $payload = $change['payload'];
-        $existing = Equipment::find($change['docId']);
+
+        // A pre-validated batch is all new records with freshly minted ids, so
+        // looking each one up to discover it does not exist is a wasted query.
+        $existing = $bulk?->preValidated ? null : Equipment::find($change['docId']);
         $updatedAt = $this->payloadUpdatedAt($change);
 
         if ($existing && $this->isStale($updatedAt, $existing->updated_at)) {
@@ -417,7 +500,7 @@ class SyncService
 
         // asset_tag is UNIQUE. A different row already holding it is a hard
         // reject so the operator sees the clash instead of losing the record.
-        $tagOwner = Equipment::where('asset_tag', $assetTag)->first();
+        $tagOwner = $bulk?->preValidated ? null : Equipment::where('asset_tag', $assetTag)->first();
         if ($tagOwner && $tagOwner->id !== $change['docId']) {
             return [
                 'changeId' => $change['id'],
@@ -444,8 +527,12 @@ class SyncService
         // optional, because plenty of offices assign at division level.
         $divisionId = $this->str($payload['divisionId'] ?? null);
         $sectionId = $this->str($payload['sectionId'] ?? null);
-        $division = $divisionId ? Office::whereKey($divisionId)->whereNull('division_id')->first() : null;
-        $section = $sectionId ? Office::whereKey($sectionId)->whereNotNull('division_id')->first() : null;
+        $division = $bulk
+            ? $bulk->division($divisionId)
+            : ($divisionId ? Office::whereKey($divisionId)->whereNull('division_id')->first() : null);
+        $section = $bulk
+            ? $bulk->section($sectionId)
+            : ($sectionId ? Office::whereKey($sectionId)->whereNotNull('division_id')->first() : null);
 
         if (! $existing) {
             $missing = match (true) {
@@ -469,7 +556,7 @@ class SyncService
 
         // property_number is UNIQUE and names one physical item, so a clash is
         // surfaced the same way an asset tag clash is rather than silently lost.
-        if ($propertyNumber !== null) {
+        if ($propertyNumber !== null && ! $bulk?->preValidated) {
             $owner = Equipment::where('property_number', $propertyNumber)->first();
             if ($owner && $owner->id !== $change['docId']) {
                 return [
@@ -494,7 +581,9 @@ class SyncService
         }
 
         $categoryId = $this->str($payload['categoryId'] ?? null);
-        $category = $categoryId ? Category::find($categoryId) : null;
+        $category = $bulk
+            ? $bulk->category($categoryId)
+            : ($categoryId ? Category::find($categoryId) : null);
 
         $serialNumber = $this->str($payload['serialNumber'] ?? null);
         $monitorSerial = $this->str($payload['monitorSerialNumber'] ?? null);
@@ -529,7 +618,7 @@ class SyncService
          * scanner would resolve one physical device to two records.
          */
         foreach ([[$serialNumber, 'Serial number'], [$monitorSerial, 'Monitor serial number']] as [$value, $label]) {
-            if ($value === null) {
+            if ($value === null || $bulk?->preValidated) {
                 continue;
             }
             $owner = Equipment::whereKeyNot($change['docId'])
@@ -601,7 +690,18 @@ class SyncService
         }
         $model->forceFill($attributes)->save();
 
-        return $this->verdict($change, 'APPLIED', $model->fresh()->toSyncArray());
+        /*
+         * `fresh()` is a second SELECT for every row. It earns that on the
+         * single-write path, where another writer may have landed between the
+         * save and the response. In a pre-validated batch every attribute was
+         * set explicitly moments ago and nothing else is touching these
+         * brand-new rows, so the in-memory model is already the stored record.
+         */
+        return $this->verdict(
+            $change,
+            'APPLIED',
+            ($bulk?->preValidated ? $model : $model->fresh())->toSyncArray(),
+        );
     }
 
     /* ------------------------------------------------------------------ */

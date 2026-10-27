@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useToast } from 'primevue/usetoast'
 
+import SpecificationField from './SpecificationField.vue'
 import SpecificationFields from './SpecificationFields.vue'
 import { deepClone } from '@/domain/clone'
 import { fromDateOnly } from '@/domain/loan'
@@ -90,7 +91,44 @@ function onDivisionChange(value) {
 
 const selectedCategory = computed(() => inventory.categoryById.get(form.value.categoryId))
 
-const customFields = computed(() => selectedCategory.value?.customFields?.fields ?? [])
+const allCustomFields = computed(() => selectedCategory.value?.customFields?.fields ?? [])
+
+/**
+ * Specifications the category asks to be shown beside a particular field
+ * rather than in the Specifications block at the bottom.
+ *
+ * A host name belongs next to the property number because both are how you
+ * confirm the machine in front of you is the record on the screen; a monitor's
+ * property number belongs next to the monitor's serial because they identify
+ * the same display. They are still specifications — the slot only says where
+ * the form draws them.
+ */
+const slotted = (name) => computed(() => allCustomFields.value.filter((f) => f.slot === name))
+
+const identityFields = slotted('identity')
+const monitorFields = slotted('monitor')
+const deploymentFields = slotted('deployment')
+
+/** Everything the category did not place itself. */
+const customFields = computed(() => allCustomFields.value.filter((f) => !f.slot))
+
+/**
+ * AnyDesk is how support reaches a machine remotely, so only the categories
+ * that say they use it offer the field. An asset that already carries a number
+ * keeps showing it whatever its category now says, so switching the flag off
+ * hides the field without stranding a value nobody can edit.
+ */
+const showsAnydesk = computed(
+  () => Boolean(selectedCategory.value?.tracksAnydesk) || Boolean(form.value.anydeskNumber),
+)
+
+/** Writes one specification, whether it is drawn inline or in the block below. */
+function setSpec(key, value) {
+  form.value = {
+    ...form.value,
+    specifications: { ...form.value.specifications, [key]: value },
+  }
+}
 
 /** Desktop sets are one asset with two serialised parts. */
 const needsMonitorSerial = computed(() => Boolean(selectedCategory.value?.requiresMonitorSerial))
@@ -223,6 +261,15 @@ async function save() {
         <span class="hint">Official government property number</span>
       </div>
 
+      <!-- Host names sit here, next to the number on the asset's sticker. -->
+      <SpecificationField
+        v-for="field in identityFields"
+        :key="field.key"
+        :field="field"
+        :model-value="form.specifications[field.key] ?? null"
+        @update:model-value="setSpec(field.key, $event)"
+      />
+
       <div class="field">
         <label for="eq-acquired">Date acquired <span class="required">*</span></label>
         <DatePicker
@@ -256,6 +303,15 @@ async function save() {
         />
         <span class="hint">This category records both parts of the set</span>
       </div>
+
+      <!-- The monitor's property number, beside the serial of the same display. -->
+      <SpecificationField
+        v-for="field in monitorFields"
+        :key="field.key"
+        :field="field"
+        :model-value="form.specifications[field.key] ?? null"
+        @update:model-value="setSpec(field.key, $event)"
+      />
 
       <div class="field">
         <label for="eq-model">Model name <span class="required">*</span></label>
@@ -305,6 +361,15 @@ async function save() {
       storeroom has no user.
     </p>
     <div class="form-grid">
+      <!-- The user's ID number, ahead of their name, because it identifies them. -->
+      <SpecificationField
+        v-for="field in deploymentFields"
+        :key="field.key"
+        :field="field"
+        :model-value="form.specifications[field.key] ?? null"
+        @update:model-value="setSpec(field.key, $event)"
+      />
+
       <div class="field">
         <label for="eq-actual-user">Actual user</label>
         <InputText id="eq-actual-user" v-model="form.actualUser" placeholder="Juan D. Dela Cruz" fluid />
@@ -325,7 +390,7 @@ async function save() {
         <InputText id="eq-ad" v-model="form.adUsername" placeholder="jddelacruz" class="mono" fluid />
       </div>
 
-      <div class="field">
+      <div v-if="showsAnydesk" class="field">
         <label for="eq-anydesk">AnyDesk number</label>
         <InputText
           id="eq-anydesk"
@@ -335,6 +400,7 @@ async function save() {
           inputmode="numeric"
           fluid
         />
+        <span class="hint">Optional — for remote support sessions</span>
       </div>
     </div>
 

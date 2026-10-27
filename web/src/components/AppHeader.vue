@@ -23,6 +23,7 @@ const links = computed(() =>
     { to: '/categories', label: 'Categories', icon: 'pi pi-tags' },
     { to: '/offices', label: 'Offices', icon: 'pi pi-sitemap' },
     { to: '/borrowing', label: 'Borrowing', icon: 'pi pi-arrow-right-arrow-left' },
+    { to: '/import', label: 'Import', icon: 'pi pi-upload' },
     { to: '/archive', label: 'Archive', icon: 'pi pi-inbox' },
     { to: '/history', label: 'History', icon: 'pi pi-history' },
     // Account management is admin-only; hide what the API would refuse anyway.

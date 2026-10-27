@@ -4,6 +4,7 @@ use App\Domain\Role;
 use App\Http\Controllers\Api\ArchiveController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\HistoryController;
+use App\Http\Controllers\Api\ImportController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\UserController;
 use Illuminate\Support\Facades\Route;
@@ -59,6 +60,17 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     // Writing inventory is limited to staff who physically handle the assets.
     Route::middleware('role:'.Role::ADMIN.','.Role::MANAGER)->group(function () {
         Route::post('/archive/equipment/{id}/restore', [ArchiveController::class, 'restoreEquipment']);
+
+        /*
+         * Bulk import. `preview` is a dry run reporting what a file would do;
+         * only `store` writes, and both run the same validation so the preview
+         * is not an estimate. The template download sits here too: it is
+         * documentation of a write, and of no use to someone who cannot write.
+         */
+        Route::get('/import/profiles', [ImportController::class, 'index']);
+        Route::get('/import/{profile}/template', [ImportController::class, 'template']);
+        Route::post('/import/{profile}/preview', [ImportController::class, 'preview']);
+        Route::post('/import/{profile}', [ImportController::class, 'store']);
         Route::post('/{table}', [InventoryController::class, 'store'])
             ->whereIn('table', ['offices', 'categories', 'equipment', 'borrowings']);
         Route::put('/{table}/{id}', [InventoryController::class, 'update'])

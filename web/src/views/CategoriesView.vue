@@ -23,6 +23,7 @@ function blank() {
     description: '',
     defaultLoanDays: 7,
     requiresMonitorSerial: false,
+    tracksAnydesk: false,
     fields: [],
   }
 }
@@ -50,6 +51,7 @@ function openEdit(category) {
     description: category.description ?? '',
     defaultLoanDays: category.defaultLoanDays,
     requiresMonitorSerial: Boolean(category.requiresMonitorSerial),
+    tracksAnydesk: Boolean(category.tracksAnydesk),
     fields: deepClone(category.customFields?.fields, []) ?? [],
   }
   dialogOpen.value = true
@@ -89,6 +91,7 @@ async function save() {
       description: form.value.description,
       defaultLoanDays: form.value.defaultLoanDays,
       requiresMonitorSerial: form.value.requiresMonitorSerial,
+      tracksAnydesk: form.value.tracksAnydesk,
       customFields: { fields: form.value.fields },
     }
     if (form.value.id) await inventory.updateCategory(form.value.id, payload)
@@ -190,6 +193,9 @@ function confirmDelete(category) {
             {{ category.defaultLoanDays === 1 ? 'day' : 'days' }}
           </p>
 
+          <p v-if="category.tracksAnydesk" class="muted">
+            <i class="pi pi-desktop" /> Records an AnyDesk number
+          </p>
           <p v-if="category.requiresMonitorSerial" class="muted">
             <i class="pi pi-desktop" style="margin-right: 0.35rem" />
             Requires system unit + monitor serials
@@ -260,6 +266,17 @@ function confirmDelete(category) {
             <span class="hint">
               Tick this for desktop sets. Registering equipment in this category
               will then require both serials.
+            </span>
+          </label>
+        </div>
+
+        <div class="field span-2 monitor-toggle">
+          <Checkbox v-model="form.tracksAnydesk" input-id="cat-anydesk" binary />
+          <label for="cat-anydesk">
+            Reached remotely over AnyDesk
+            <span class="hint">
+              Tick this for computers. Anything else — a projector, a switch —
+              has no remote session, and the field stays off its form.
             </span>
           </label>
         </div>

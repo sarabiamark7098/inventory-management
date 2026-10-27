@@ -72,6 +72,7 @@ REST API below, plus the status vocabulary duplicated in
 - **US-2.7:** As an Inventory Manager, flag a category as recording two serial numbers, so a desktop set captures both the system unit and the monitor as one asset.
 - **US-2.8:** As an Inventory Manager, add free-text remarks to an asset for anything the structured fields have no column for — defect history, transfer notes, why a unit is set aside.
 - **US-2.9:** As an Inventory Manager, review everything that has been removed in an Archive screen and restore an asset archived by mistake; as a System Admin, permanently destroy an archived asset that has been disposed of, leaving an audit snapshot behind.
+- **US-2.11:** As an Inventory Manager, bulk-register equipment from a CSV using a column set matched to the type of asset, download a sample file with the right headers, and see exactly what a file would do before any of it is saved.
 - **US-2.10:** As a Property Officer, open a History screen and see every change anyone has made — who, what, when, and which fields moved from what to what — filtered by person, record type, action or date.
 
 ### Epic 3: Borrowing & Return Management
@@ -273,6 +274,31 @@ and serials reserved for as long as it sits there.
 
 ---
 
+## How a category shapes the equipment form
+
+The form is category-driven in three ways, all of them data rather than markup,
+so a field office can change what it records without changing code:
+
+- **`custom_fields`** lists the specifications the category records, and the
+  form renders exactly those. A field may also name a **`slot`**, which lifts it
+  out of the Specifications block and draws it beside the field it belongs with:
+  `identity` next to the property number (a machine's host names), `monitor`
+  next to the monitor's serial (its property number), `deployment` ahead of the
+  actual user (their ID number). A host name read half a screen from the
+  property number is harder to check against the machine in front of you.
+- **`requires_monitor_serial`** makes an asset two serialised parts, and the
+  monitor serial a required field.
+- **`tracks_anydesk`** decides whether the AnyDesk field appears at all — a
+  projector has no remote session. An asset already holding a number keeps
+  showing the field whatever its category now says, so switching the flag off
+  hides it without stranding a value nobody can edit.
+
+`SpecificationField` renders one input and `SpecificationFields` the block of
+them, which is what lets a slotted field sit inside the main grid rather than
+nesting a second grid in a cell.
+
+---
+
 ## The Activity History
 
 Every write is recorded by `spatie/laravel-activitylog`, driven from Eloquent's
@@ -313,6 +339,163 @@ or `PURGE` entry elsewhere in the log — which is what lets a purged asset's
 whole trail still read by name. Search works the same way in reverse, so
 searching an asset tag returns every entry about that asset rather than only the
 ones that happen to contain the text.
+
+---
+
+## Import
+
+Bulk registration from a CSV, with an **import profile per type of ICT
+equipment** — `desktop`, `laptop`, `tablet` — because the field office's own
+workbook keeps a sheet per type and they genuinely differ. A desktop records a
+monitor and a host name; a tablet records neither but does record a charger. One
+universal column set would make every type's required fields optional, which is
+the same as validating nothing.
+
+```
+GET  /api/import/profiles              the types, and every column each accepts
+GET  /api/import/{profile}/template    the sample CSV  (?headersOnly=1 for no examples)
+POST /api/import/{profile}/preview     a dry run — writes nothing
+POST /api/import/{profile}             the write
+```
+
+A profile is `app/Imports/*ImportProfile.php`: an ordered list of
+`ImportColumn`s naming the payload fields each header feeds, assembled from the
+factories on the base class. The order is what the generated template emits, so
+it mirrors the sheets the field office actually works from. Adding printers or
+scanners is one subclass plus a line in `ImportProfileRegistry`.
+
+**A column that writes a specification must be declared by its category.** The
+equipment form renders exactly the fields `category.custom_fields` names, so a
+`spec:` target no category declares is stored and searchable but can never be
+read or edited on the equipment screen. `CategorySeeder` and the profiles are
+therefore two halves of one thing, and `ImportTest` fails if they drift apart.
+Retiring a field means retiring its column too, or the import writes somewhere
+nothing displays — the workbook's `Description` and combined
+`Keyboard / Mouse Available ( K / M )` are now reported as unrecognised for
+exactly that reason.
+
+Yes/no columns (`XDR`, `Sentinel`, `Keyboard`, `Mouse`, `Working Charger`, the
+three warranties) settle on `Yes`/`No` on the way in, because the equipment form
+shows them as a two-option dropdown and a value outside it renders blank. A cell
+the pattern does not recognise is kept verbatim instead — the older sheets write
+`YES - 8.7` under XDR, and losing the agent version would be worse than an
+untidy value, which is also why `xdr` is a text field rather than a dropdown.
+
+**Columns are matched by header name, never by position.** Both sides are
+reduced to letters and digits before comparing, so spacing, punctuation and
+capitalisation stop mattering, and each column carries the source workbook's own
+spellings as aliases — including `Date Aquired`, misspelt there since at least
+2024. Unmatched and repeated headers are reported rather than ignored, because a
+column the operator believed was being read, silently dropped, puts a quietly
+incomplete record into an audited register.
+
+**Preview and commit run identical validation**; the only difference is whether
+the result is handed to `SyncService`. Rows are applied individually, so one bad
+record cannot discard 900 good ones.
+
+**Corrections** close the loop between the two. Each row comes back with `fix`
+(the columns its errors point at), `cells` (the file's own values) and
+`corrected` (the edits in force), and the screen edits a failing row in place
+rather than sending the operator back to Excel. The request carries them as
+`corrections`, a JSON map of line → column → value.
+
+A correction replaces a **cell, not a verdict**: the file is read and validated
+again with the edits overlaid, so a corrected row still has to satisfy every
+rule — a corrected property number can still collide, and a corrected date can
+still be unreadable. The client never submits a finished record, which is what
+keeps the server the only authority. `cells` deliberately stays un-overlaid, so
+the editor can tell a real edit from a value typed back to what the file already
+said, and drop the correction in that case.
+
+The client re-previews before it will commit: the store compares a signature of
+the defaults and corrections against the one the report was built from, and
+blocks the import button while they differ. Gating on "are there corrections?"
+instead would disable it permanently after the first re-check.
+
+### At volume
+
+A five thousand row file is the limit (`CsvReader::MAX_ROWS`), and reaching it
+took four changes. Measured on that file, the commit went from 34.1s and 57,004
+queries to 10.4s and 9,520 — PHP's default execution limit is 30s, so the first
+number was not a slow import but a failed one.
+
+1. **`SyncService::pushBatch()`** replaces `push()` for the import. A
+   `BulkContext` resolves the offices and categories once instead of per row,
+   each chunk of 500 shares one transaction, and the per-row uniqueness SELECTs
+   are skipped because the importer has already run them — the unique indexes
+   remain the guarantee. A chunk that does hit one rolls back and is replayed
+   row by row, so a race costs one record rather than five hundred.
+2. **The activity logger stops re-reading each row.** Spatie calls `fresh()`
+   inside `resolveModelForLogging()`, a third of all the queries a bulk insert
+   issues. {@see App\Models\Concerns\ActivityLogMode} scopes the skip to
+   `created` events inside a batch, where every column was set explicitly and
+   the re-read provably cannot differ. Ordinary writes keep the safeguard.
+3. **The report lists a sample, not the file.** `present()` returns every row
+   needing attention up to 500, plus 25 clean ones; `summary` still counts
+   everything and `rowsOmitted` says how many are not listed. This took the
+   response from 11.2MB to 0.4MB, and the `cells` that back the correction
+   editor are now built only for listed rows.
+4. **Nothing scales with the register.** The identifier snapshot queries only
+   the values the file carries rather than reading the equipment table, and the
+   next asset tag is a `MAX()` in SQL rather than every tag pulled into PHP.
+
+The costs that remain are the two the audit trail requires: one insert for the
+asset and one for its log entry. Batching those would be faster still and is
+the reason not to — a hand-written bulk insert is exactly the code path that
+can forget to log.
+
+Four things the spreadsheets need that a tidy CSV would not:
+
+1. **Combined identifier columns.** `PROPERTY NO / SN No.` packs two values into
+   one cell. A column declares several `targets` and the value splits across
+   them in order. A cell with no separator goes to the column's `soleTarget` —
+   the property number for the main column, but the *serial* for the monitor
+   column, whose cells hold bare serials despite its header.
+2. **Placeholders.** `N/A` is stripped from identifier columns only. A literal
+   there would take a unique index and reject every later row; the same word in
+   a descriptive column is a real answer and is kept.
+3. **Spreadsheet padding.** A trailing row holding nothing but a leftover
+   `FALSE` is counted as `BLANK`, not reported as a failed import. The source
+   sheets carry around 900 of them.
+4. **Ambiguous dates.** `03/04/2026` is refused rather than guessed. Acquisition
+   dates drive useful-life reporting, so only unambiguous forms are accepted —
+   `YYYY-MM-DD`, textual months, an Excel day count, or a slash date where one
+   part is too large to be a month.
+
+Asset tags are generated per profile (`ICT-DT-0042`) when a row has none, since
+the register keys on property numbers and has no tag column.
+
+### Derived records
+
+A workstation's row can name a printer and a scanner, and those are two further
+pieces of equipment rather than two more facts about the computer — each has
+its own property number, and therefore its own PAR. So the `printer:` and
+`scanner:` column targets do not become specifications on the machine: the
+importer registers a **Printers** and a **Scanners** asset from them, tagged
+`ICT-PRN-####` and `ICT-SCN-####`.
+
+A derived record inherits what it genuinely shares — division, section,
+province, location, acquisition date, PAR holder, actual user, status — because
+a printer delivered with a machine was bought and issued alongside it. It must
+bring its own **model and property number**, which are what identify it; a row
+that names a printer without them gets a warning rather than a half-identified
+asset. `spec:attachedTo` holds the workstation's asset tag, which is what keeps
+the pair findable once they are separate records.
+
+Derived rows run through the same `examine()` as any other, with their values
+preset rather than read from columns, so every rule applies to them unchanged —
+including clashing with a property number already in the register. They carry
+`derivedFrom` (the line they came from) and offer no correction editor of their
+own: the fix is to correct that line's `Printer Property` cell and re-check.
+
+`summary.derived` counts them, and `summary.total` still counts file lines —
+which is why the screen's record count is `total - blank + derived`.
+
+**`parFallback`** is opt-in and never automatic: the source workbook leaves
+`PAR / Assigned to` empty on every row and names the holder under
+`Sub-PAR / Actual User`, but the PAR names who is *financially accountable*,
+which is frequently not the user. The operator asks for the substitution, and
+every row it touches carries a warning saying so.
 
 ---
 

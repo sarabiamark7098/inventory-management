@@ -86,7 +86,11 @@ async function request(path, options = {}) {
       ...options,
       headers: {
         Accept: 'application/json',
-        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        // FormData sets its own Content-Type, with the multipart boundary in
+        // it. Declaring JSON here would make the upload unparseable.
+        ...(options.body && !(options.body instanceof FormData)
+          ? { 'Content-Type': 'application/json' }
+          : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...options.headers,
       },
@@ -130,6 +134,38 @@ async function request(path, options = {}) {
 const json = (method) => (path, payload) =>
   request(path, { method, body: JSON.stringify(payload ?? {}) })
 
+/**
+ * Fetches a file the API serves behind the bearer token.
+ *
+ * A plain link cannot be used: the browser would send no Authorization header
+ * and get a 401 back as a downloaded file. So the body is read as a blob and
+ * handed to a temporary object URL instead.
+ */
+async function download(path, fallbackName) {
+  const token = readToken()
+
+  const response = await fetch(`${BASE_URL}${path}`, {
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  }).catch((cause) => {
+    onReachability?.(false)
+    throw new ApiError('Cannot reach the server. Check your connection and try again.', 0, {
+      cause: cause?.message ?? null,
+    })
+  })
+
+  onReachability?.(true)
+
+  if (!response.ok) {
+    if (response.status === 401 && token) onUnauthenticated?.()
+    throw new ApiError(`Download failed with status ${response.status}`, response.status, null)
+  }
+
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)
+
+  return { blob: await response.blob(), filename: match ? decodeURIComponent(match[1]) : fallbackName }
+}
+
 const query = (params) => {
   const search = new URLSearchParams(
     Object.entries(params ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== ''),
@@ -167,6 +203,18 @@ export const api = {
   purgeEquipment: (id) => request(`/archive/equipment/${id}`, { method: 'DELETE' }),
 
   stats: () => request('/stats'),
+
+  // Bulk import. `preview` is a dry run; `importEquipment` is the write. Both
+  // take the same FormData, so the preview the operator approved is the thing
+  // that gets sent.
+  importProfiles: () => request('/import/profiles'),
+  importTemplate: (profile, headersOnly = false) =>
+    download(
+      `/import/${profile}/template${headersOnly ? '?headersOnly=1' : ''}`,
+      `ict-inventory-${profile}-sample.csv`,
+    ),
+  previewImport: (profile, form) => request(`/import/${profile}/preview`, { method: 'POST', body: form }),
+  importEquipment: (profile, form) => request(`/import/${profile}`, { method: 'POST', body: form }),
 
   // Activity history. Paged and filtered server-side: unlike the inventory
   // collections this one grows without bound.

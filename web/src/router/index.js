@@ -40,6 +40,12 @@ const routes = [
     meta: { title: 'Borrowing' },
   },
   {
+    path: '/import',
+    name: 'import',
+    component: () => import('@/views/ImportView.vue'),
+    meta: { title: 'Import', roles: ['ADMIN', 'MANAGER'] },
+  },
+  {
     path: '/archive',
     name: 'archive',
     component: () => import('@/views/ArchiveView.vue'),

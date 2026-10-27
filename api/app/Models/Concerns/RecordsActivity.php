@@ -30,7 +30,12 @@ use Spatie\Activitylog\Support\LogOptions;
  */
 trait RecordsActivity
 {
-    use LogsActivity;
+    // Aliased rather than simply overridden: `parent::` means nothing inside a
+    // trait, and this keeps the package's own implementation reachable so the
+    // override below is a narrow exception to it rather than a copy of it.
+    use LogsActivity {
+        resolveModelForLogging as private packageResolveModelForLogging;
+    }
 
     public function getActivitylogOptions(): LogOptions
     {
@@ -57,6 +62,23 @@ trait RecordsActivity
     protected function isRestoring(): bool
     {
         return false;
+    }
+
+    /**
+     * Skips the package's re-read of a row this process just inserted.
+     *
+     * `resolveModelForLogging()` normally calls `fresh()`, so that what is
+     * logged is what the database stored rather than what was sent. That costs
+     * a SELECT per model, which a bulk import cannot afford — see
+     * {@see ActivityLogMode} for why it is safe to skip there, and only there.
+     */
+    protected function resolveModelForLogging(string $processingEvent): static
+    {
+        if ($processingEvent === 'created' && ActivityLogMode::trustsInMemoryInserts()) {
+            return $this;
+        }
+
+        return $this->packageResolveModelForLogging($processingEvent);
     }
 
     /**

@@ -290,6 +290,86 @@ not a failed write. The transaction was saved and flagged, because someone
 physically has the device either way; the error message is how the operator
 learns it needs adjudicating.
 
+## Import
+
+Registering a province's worth of equipment by hand is not realistic, so assets
+load from a CSV — one **import profile per type**, because the sheets differ:
+a desktop records a monitor and a host name, a tablet records a charger and
+neither of those.
+
+The **Import** screen walks through five steps:
+
+1. **Pick the type** — and download the sample CSV with the right headers.
+2. **Fill the gaps** that apply to every row: division, province, status.
+3. **Choose the file**, and preview it.
+4. **Review and correct.** Every row gets a verdict, and a failing row is fixed
+   in place — the editor opens on the columns that row's errors actually point
+   at, so you are not hunting through 37 fields to fix one date. Re-check and
+   the report is rebuilt.
+5. **Import**, which is the only step that writes.
+
+Nothing reaches the database until step 5, and the import button stays disabled
+while a correction has not been re-checked — so what gets written is always what
+you last reviewed.
+
+A correction replaces a **cell, not a verdict**. The file is validated again
+from scratch with your edits in place, so a corrected row still has to pass
+every rule: a property number you typed in can still clash with one already in
+the register, and a date you fixed can still be unreadable. Nothing you can type
+on the review screen talks the server out of a rule.
+
+Columns are matched **by header name, not by position**, so you can reorder them,
+leave the optional ones out, or paste in a sheet that already uses the field
+office's own headers — spacing, punctuation and capitalisation are ignored, and
+the workbook's spellings are recognised as written, `Date Aquired` included.
+Anything unmatched is listed rather than silently dropped.
+
+A few things it does that a plain CSV reader would not, each because a real
+register needs it:
+
+| The sheet says | What happens |
+| --- | --- |
+| `FO11-CO1-24-0021 / NXB13SP001` in one cell | Split into property number and serial |
+| `N/A` as a serial number | Read as blank — a literal would take the unique index and reject every later row |
+| `NO` under "With XDR" | Kept, because there it is a real answer |
+| 900 trailing rows holding a stray `FALSE` | Counted as blank, not reported as 900 failures |
+| `03/04/2026` | Refused. March or April depends on who typed it, and the date drives useful-life reporting |
+| No asset tag column | A tag is assigned — `ICT-DT-0042`, continuing from the highest already issued |
+
+Duplicates are caught both against the register and *within the file*, and an
+archived asset still owns its identifiers, so its property number cannot be
+re-used while it sits there.
+
+**A workstation row can produce three assets.** The printer and scanner columns
+on a desktop or laptop sheet describe two more pieces of equipment, each with
+its own property number and therefore its own PAR — so they are registered as
+**Printers** and **Scanners** in their own right rather than noted on the
+computer. Each inherits the division, PAR holder and acquisition date from the
+machine it was delivered with, and records that machine's asset tag under
+"Attached to" so the pair stays findable. A printer named without a property
+number is reported, not invented. Both categories can also be registered by
+hand like any other peripheral.
+
+Files run to a few thousand rows, so the report lists what you can act on —
+every row needing attention, plus a sample of clean ones — and tells you how
+many it left out. The totals always describe the whole file. A five thousand
+row file is the cap; it previews in about a second and writes in about ten.
+
+Everything a profile imports is shown on the **equipment** screen: each category
+declares the fields its import writes — host name, XDR and its version, Sentinel,
+keyboard, mouse, the printer and scanner details, and the warranties — so an
+imported asset can be read and edited afterwards rather than holding values
+nothing displays. The yes/no columns settle on `Yes`/`No` on the way in so they
+match the dropdowns, except where a cell says something else entirely: the older
+sheets write `YES - 8.7` under XDR, and that is kept whole rather than flattened
+to `Yes` and the version thrown away.
+
+> **The PAR column.** The field office's workbook leaves `PAR / Assigned to`
+> empty and puts the name under `Sub-PAR / Actual User`. The importer will not
+> assume those are the same person — the PAR names who is financially
+> accountable, which is often not the user — so it says so and offers a tick box.
+> Every row it then fills carries a warning naming the substitution.
+
 ## The archive
 
 Deleting anything is a **soft delete**: the row stays with `deleted_at` set, so
@@ -359,7 +439,7 @@ not fit this schema:
 cd api && php artisan test
 ```
 
-157 tests / 548 assertions covering the loan maths, the conflict engine in both
+246 tests / 966 assertions covering the loan maths, the conflict engine in both
 arrival orders, Last-Write-Wins, equipment reconciliation, request validation,
 the full OTP lifecycle (expiry, reuse, brute force, rate limiting, enumeration
 resistance), the email domain policy, property accountability (PAR required on registration,
